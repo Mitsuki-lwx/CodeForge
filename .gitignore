@@ -1,0 +1,15 @@
+# 上下文压缩落盘副产物（进程退出后保留，不纳入版本控制）
+.codeforge/sessions/
+
+# 运行时自动生成的记忆文件
+.codeforge/memory/
+
+# 本地 Claude Code 设置
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.idea/

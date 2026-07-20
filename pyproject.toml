@@ -1,0 +1,20 @@
+[project]
+name = "codeforge"
+version = "0.1.0"
+description = "A terminal AI coding assistant, Claude Code style"
+requires-python = ">=3.11"
+dependencies = [
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27.0",
+    "jsonschema>=4.20.0",
+    "GitPython>=3.1.0",
+]
+
+[project.scripts]
+codeforge = "main:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
