@@ -13,3 +13,20 @@ __pycache__/
 .venv/
 .pytest_cache/
 .idea/
+.ruff_cache/
+
+# 打包产物
+build/
+dist/
+*.egg-info/
+
+# 环境变量与密钥（若改用 .env 存放）
+.env
+.env.*
+
+# 日志
+*.log
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
