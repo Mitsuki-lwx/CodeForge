@@ -72,7 +72,13 @@ This installs two entry points:
 
 ## Configuration
 
-Copy the example below to `config.yaml` and fill in your provider API key(s).
+Copy `config.example.yaml` to `config.yaml` and fill in your provider API key(s):
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Full example:
 
 ```yaml
 providers:

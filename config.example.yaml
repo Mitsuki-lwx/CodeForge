@@ -1,0 +1,55 @@
+# CodeForge — 多协议 LLM 终端对话客户端
+#
+# 用法：复制本文件为 config.yaml 并填入你自己的 API 密钥。
+#   cp config.example.yaml config.yaml
+#
+# providers: LLM 服务提供商列表，可配置多项
+#   每项字段说明：
+#     - name:      可读名称（如 "My Claude"），用于界面显示
+#     - protocol:  协议类型，"anthropic" 或 "openai"
+#     - model:     模型名（如 "claude-sonnet-4-20250514", "gpt-4o"）
+#     - api_key:   API 密钥（必填）
+#     - base_url:  自定义端点地址（可选，覆盖协议默认端点）
+#     - vendor:    上游厂商（可选，deepseek/openai/anthropic；缺省自动识别）
+#     - thinking:  是否开启扩展思考（可选，默认 false，仅 anthropic 协议生效）
+#     - context_window: 上下文窗口大小 token（可选，0 走协议默认）
+#     - tier:      路由价位标记（可选，cheap=便宜，见 features.router）
+
+providers:
+  - name: "Anthropic"
+    protocol: anthropic
+    model: "claude-sonnet-4-20250514"
+    api_key: "sk-your-api-key"
+    # base_url: "https://api.example.com/anthropic"
+    # vendor: anthropic
+    # thinking: true
+    # context_window: 200000
+
+  - name: "OpenAI"
+    protocol: openai
+    model: "gpt-4o"
+    api_key: "sk-your-api-key"
+    # base_url: "https://api.example.com/v1"
+    # vendor: openai
+    # tier: cheap
+
+# ── 可观测性(Logs/Metrics/Traces)──
+# 配了 endpoint 才上报外部(此例为自托管 Langfuse OTLP);不配则默认落本地 ~/.codeforge/obs/
+observability:
+  # endpoint: http://localhost:3000/api/public/otel/v1/traces
+  # headers:
+  #   # Langfuse 认证（独立 project: Base64(pk-lf-...:sk-lf-...)）
+  #   Authorization: Basic <base64(pk-lf-...:sk-lf-...)>
+
+# ── 功能开关 ──
+features:
+  coordinator_mode: false   # 团队协调器模式
+  fork_teammate: false      # fork 子 agent 是否作为队友
+  router:                   # 模型路由（默认关；开启后默认两档）
+    enabled: false
+    judge_prompt: ""        # 自定义复杂度判断指令；空则用内置
+    cheap_tier: "cheap"     # 便宜模型的价位标记
+
+# ── Agent 循环策略 ──
+# "react"（默认）或自定义模块路径（spec_loop）
+loop: ""
