@@ -113,6 +113,39 @@ class EditFileTool(Tool):
                     # In dry run, just report and continue
                     continue
 
+            # 对齐参考项目:old_string 必须唯一,否则(>1 次)视为歧义、回滚
+            occurrences = current.count(old)
+            if occurrences > 1:
+                match_results.append(
+                    {"index": i, "matched": False, "old_string": old,
+                     "reason": "not_unique"}
+                )
+                if not dry_run:
+                    try:
+                        file_path.write_text(original, encoding="utf-8")
+                    except Exception as e:
+                        return ToolResult(
+                            success=False,
+                            error=f"Rollback failed: {e}",
+                            meta={"file_path": str(file_path)},
+                        )
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            f"Edit #{i} failed: old_string found {occurrences} "
+                            f"times, must be unique"
+                        ),
+                        meta={
+                            "file_path": str(file_path),
+                            "edits_applied": applied,
+                            "edits_total": len(edits),
+                            "failed_index": i,
+                            "occurrences": occurrences,
+                        },
+                    )
+                else:
+                    continue
+
             # Replace only the FIRST occurrence
             current = current.replace(old, new, 1)
             applied += 1

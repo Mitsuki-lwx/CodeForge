@@ -7,6 +7,7 @@ token 超限先压缩、时间跨度提醒。
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,8 @@ from core.context_compression.state import (
     SessionContext,
 )
 from core.context_compression.token import estimate_tokens
+
+logger = logging.getLogger(__name__)
 
 # 时间跨度提醒阈值（小时）
 RECOVERY_STALE_HOURS = 6
@@ -57,6 +60,7 @@ def _deserialize(data: dict) -> Message:
         tool_use_id=data.get("tool_use_id"),
         tool_name=data.get("tool_name"),
         tool_input=data.get("tool_input"),
+        reasoning=data.get("reasoning", ""),
     )
 
 
@@ -134,6 +138,27 @@ def _make_session_context(session_dir: Path) -> SessionContext:
     )
 
 
+def _persist_compact(session_dir: Path, msgs: list[Message]) -> None:
+    """压缩后把新消息写回 JSONL：先写 compact 标记，再逐条重写。
+
+    下次恢复时 `_read_messages` 遇 compact 标记会丢弃旧消息，只读到压缩后的
+    内容——避免每次 resume 都重新压缩一次。失败仅告警不阻断恢复（下次仍会压缩，
+    语义不变）。
+    """
+    from core.archive.writer import Writer
+
+    try:
+        writer = Writer(session_dir)
+        try:
+            writer.append_compact_marker()
+            for m in msgs:
+                writer.append(m)
+        finally:
+            writer.close()
+    except Exception as e:  # noqa: BLE001 —— 写回失败不阻断恢复
+        logger.warning("压缩结果写回失败（不影响本次恢复）: %s", e)
+
+
 async def _maybe_compact(
     msgs: list[Message],
     provider_config,
@@ -193,6 +218,10 @@ async def restore_session(
     msgs, compacted = await _maybe_compact(
         msgs, provider_config, context_window, session
     )
+
+    # 压缩后写回 JSONL（先 compact 标记再逐条重写），避免下次恢复重复压缩。
+    if compacted:
+        _persist_compact(d, msgs)
 
     gap = 0.0
     if last_ts:

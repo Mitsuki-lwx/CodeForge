@@ -1,4 +1,18 @@
-"""Built-in tool implementations for CodeForge."""
+"""Built-in tool implementations for CodeForge.
+
+SKIP_DIRS: 遍历目录时报跳过的重型/嵌入目录,避免把 .venv 等几千文件的
+目录递归拉爆工具执行(对齐参考项目 mewcode tools/base.py)。
+"""
+from __future__ import annotations
+
+SKIP_DIRS: frozenset[str] = frozenset({
+    ".git", ".venv", "node_modules", "__pycache__", ".tox", ".mypy_cache",
+})
+
+
+def _path_climbs_to_skip(path: "Path") -> bool:
+    """判断某个 Path 是否位于任一 SKIP_DIRS 之下(按路径段命中即跳过)。"""
+    return any(part in SKIP_DIRS for part in path.parts)
 
 
 def get_default_registry() -> "ToolRegistry":
@@ -23,4 +37,4 @@ def get_default_registry() -> "ToolRegistry":
     return registry
 
 
-__all__ = ["get_default_registry"]
+__all__ = ["get_default_registry", "SKIP_DIRS", "_path_climbs_to_skip"]

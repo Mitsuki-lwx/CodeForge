@@ -191,19 +191,11 @@ class SkillExecutor:
         )
 
         try:
-            # 收集子 Agent 输出
-            result_parts: list[str] = []
-            from core.agent.events import AgentError, AgentFinished, TextDelta
+            # 复用 SubAgent 统一循环：任务已作为首条 user 消息装填到 fork_conv，
+            # 传 task="" 让 run_to_completion 跳过 add_user。
+            from core.agent.sub_agent import run_to_completion
 
-            async for event in fork_agent.run(body):
-                if isinstance(event, TextDelta):
-                    result_parts.append(event.text)
-                elif isinstance(event, AgentError):
-                    result_parts.append(f"\n[Error: {event.message}]")
-                elif isinstance(event, AgentFinished):
-                    break
-
-            final_text = "".join(result_parts).strip()
+            final_text = await run_to_completion(fork_agent, fork_conv, task="")
 
             # 写回 token 用量
             if fork_agent._total_usage:
@@ -211,8 +203,8 @@ class SkillExecutor:
                     self._runtime.usage_anchor += fork_agent._total_usage.get(key, 0)
 
             return (
-                final_text
-                if final_text
+                final_text.strip()
+                if final_text.strip()
                 else f"[skill {skill_name} completed with no output]"
             )
 

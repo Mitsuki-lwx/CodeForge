@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from core.tool.context import ExecutionContext
 from core.tool.interface import Tool
 from core.tool.result import ToolResult
+from core.tool.tools import SKIP_DIRS, _path_climbs_to_skip
 
 
 class GrepTool(Tool):
@@ -37,8 +39,6 @@ class GrepTool(Tool):
         }
 
     async def execute(self, context: ExecutionContext, input: dict) -> ToolResult:
-        import re
-
         pattern_str = input["pattern"]
         root = Path(input["path"]) if input.get("path") else context.cwd
         if not root.is_absolute():
@@ -71,6 +71,9 @@ class GrepTool(Tool):
             files = list(root.rglob(include_glob)) if include_glob else list(root.rglob("*"))
             for f in files:
                 if not f.is_file():
+                    continue
+                # 跳过 .venv/.git/node_modules/__pycache__ 等重型目录(对齐参考项目)
+                if _path_climbs_to_skip(f):
                     continue
                 try:
                     for line_no, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):

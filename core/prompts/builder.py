@@ -59,6 +59,9 @@ class PromptBuilder:
         # 注入文本（自定义指令 / 长期记忆索引），空则跳过
         self._instructions = instructions
         self._memory = memory
+        # 会话状态注入（spec_session_state）：约束进 cached，目标/待办进 uncached
+        self._state_constraints = ""
+        self._state_goals_todos = ""
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -66,6 +69,15 @@ class PromptBuilder:
         """设置自定义指令与长期记忆索引的注入文本（F43）。"""
         self._instructions = instructions
         self._memory = memory
+
+    def set_state(self, constraints: str = "", goals_todos: str = "") -> None:
+        """设置会话状态注入文本（spec_session_state）。
+
+        constraints（硬性约束）进可缓存块；goals_todos（当前目标 + 待办）进不缓存块
+        （随会话变化，缓存会读到旧值）。
+        """
+        self._state_constraints = constraints
+        self._state_goals_todos = goals_todos
 
     def set_modules(self, modules: list[PromptModule]) -> None:
         """替换模块列表（用于测试或自定义模块）。"""
@@ -98,8 +110,18 @@ class PromptBuilder:
         assembly = PromptAssembly()
         assembly.cached.append(CachedBlock(content=stable_text))
 
+        # 硬性约束：稳定（进 cached，命中前缀缓存）；变化不频繁，与 memory 同理
+        if self._state_constraints.strip():
+            assembly.cached.append(CachedBlock(content=self._state_constraints.strip()))
+
         if env_info.strip():
             assembly.uncached.append(UncachedBlock(content=env_info.strip()))
+
+        # 当前目标 + 待办：随会话变化（进 uncached，不缓存旧值）
+        if self._state_goals_todos.strip():
+            assembly.uncached.append(
+                UncachedBlock(content=self._state_goals_todos.strip())
+            )
 
         return assembly
 

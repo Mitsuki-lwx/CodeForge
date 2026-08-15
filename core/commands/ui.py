@@ -6,9 +6,12 @@ NopUI 是测试桩，供 handler 单测使用。
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from core.permissions.modes import PermissionMode
+
+if TYPE_CHECKING:
+    from core.hooks.rules import HookRule
 
 
 class UI(Protocol):
@@ -49,6 +52,31 @@ class UI(Protocol):
     def list_active_skills(self) -> list[str]: ...
     def clear_active_skills(self) -> None: ...
     async def append_assistant_message(self, text: str) -> None: ...
+
+    # ── Hook 系统 ──
+    def hook_sources(self) -> list[str]: ...
+    def hook_rules(self) -> list[HookRule]: ...
+
+    # ── Worktree 系统 ──
+    def worktree_list(self) -> list[dict]: ...
+    async def worktree_create(self, name: str) -> dict: ...
+    async def worktree_enter(self, name: str) -> str: ...
+    async def worktree_exit(self, name: str) -> str: ...
+    async def worktree_delete(self, name: str) -> str: ...
+
+    # ── Team 系统 ──
+    def team_list(self) -> list[dict]: ...
+    def team_info(self, name: str) -> dict | None: ...
+    async def team_delete(self, name: str, force: bool = False) -> str: ...
+    async def team_kill(self, member: str) -> str: ...
+
+    # ── 会话状态系统（spec_session_state）──
+    def session_state(self) -> object | None: ...
+
+    # ── 模型切换（spec_model_switch）──
+    def providers(self) -> list: ...
+    def switch_model(self, provider) -> None: ...
+    def router_cheap_tier(self) -> str | None: ...
 
 
 class NopUI:
@@ -121,3 +149,58 @@ class NopUI:
 
     async def append_assistant_message(self, text: str) -> None:
         pass
+
+    # ── Hook 系统 ──
+
+    def hook_sources(self) -> list[str]:
+        return []
+
+    def hook_rules(self) -> list:
+        return []
+
+    # ── Worktree 系统 ──
+
+    def worktree_list(self) -> list[dict]:
+        return []
+
+    async def worktree_create(self, name: str) -> dict:
+        return {"ok": False, "reason": "not implemented"}
+
+    async def worktree_enter(self, name: str) -> str:
+        return ""
+
+    async def worktree_exit(self, name: str) -> str:
+        return ""
+
+    async def worktree_delete(self, name: str) -> str:
+        return ""
+
+    # ── Team 系统 ──
+
+    def team_list(self) -> list[dict]:
+        return []
+
+    def team_info(self, name: str) -> dict | None:
+        return None
+
+    async def team_delete(self, name: str, force: bool = False) -> str:
+        return "not implemented"
+
+    async def team_kill(self, member: str) -> str:
+        return "not implemented"
+
+    # ── 会话状态系统 ──
+
+    def session_state(self) -> object | None:
+        return None
+
+    # ── 模型切换 ──
+
+    def providers(self) -> list:
+        return []
+
+    def switch_model(self, provider) -> None:
+        pass
+
+    def router_cheap_tier(self) -> str | None:
+        return None

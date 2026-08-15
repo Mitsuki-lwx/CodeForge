@@ -40,6 +40,7 @@ def serialize_message(
         "id": msg.id,
         "timestamp": msg.timestamp,
         "usage": msg.usage,
+        "reasoning": msg.reasoning,
         "ts": ts if ts is not None else int(time.time()),
     }
     if model:

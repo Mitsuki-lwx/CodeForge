@@ -134,6 +134,14 @@ class ConversationManager:
         """向流式消息追加文本内容。"""
         msg.content += text
 
+    def append_reasoning(self, msg: Message, text: str) -> None:
+        """向流式消息追加思考内容（thinking mode）。
+
+        思考文本单独存到 reasoning 字段，便于工具调用轮回传给
+        需要回传 reasoning 的端点（如 DeepSeek 的 OpenAI 兼容接点）。
+        """
+        msg.reasoning += text
+
     def finish_stream(self, msg: Message, usage: Optional[dict] = None) -> None:
         """标记流式消息为完成状态。"""
         msg.status = MessageStatus.COMPLETED
@@ -145,6 +153,9 @@ class ConversationManager:
         """标记流式消息为错误状态。"""
         msg.status = MessageStatus.ERROR
         msg.content = error
+        # 出错后 reasoning 已无意义（内容被替换为错误文本），清空避免残留进下一次
+        # to_api_format（thinking 模式会回传 reasoning，残留会污染请求）。
+        msg.reasoning = ""
         self._emit_append(msg)
 
     def to_api_format(self) -> tuple[list[APIMessage], str]:
@@ -174,7 +185,11 @@ class ConversationManager:
                 if m.tool_name and m.tool_input is not None:
                     blocks.append(make_tool_use_block(m.tool_use_id, m.tool_name, m.tool_input))
                 api_messages.append(
-                    APIMessage(role=m.role.value, content=blocks)
+                    APIMessage(
+                        role=m.role.value,
+                        content=blocks,
+                        reasoning=m.reasoning,
+                    )
                 )
             else:
                 api_messages.append(m.to_api())
@@ -220,6 +235,9 @@ def _merge_content_blocks(messages: list[APIMessage]) -> list[APIMessage]:
         prev = result[-1]
         if prev.role == msg.role:
             prev.content = _as_blocks(prev.content) + _as_blocks(msg.content)
+            # 合并思考文本（thinking mode 回传）
+            if msg.reasoning:
+                prev.reasoning = (prev.reasoning + "\n" + msg.reasoning).strip()
         else:
             result.append(msg)
     return result

@@ -79,6 +79,13 @@ def is_safe_command(command: str) -> bool:
     if re.search(r"<\s*/dev/(sd|nvme|loop|md|dm)", cmd_stripped):
         return False
 
+    # 1b. 拒绝链式/命令替换等易被"安全前缀"掩盖危险的写法(对齐参考项目):
+    #     仅 && / ; / 反引号 / $() 一刀切(即便前缀是安全命令)。
+    #     管道 | 例外——下方 segments 对每段做完整安全校验,故不在此拒绝,
+    #     以支持 'echo | grep' 这类安全管道。
+    if re.search(r"&&|;|`|\$\(", cmd_stripped):
+        return False
+
     # 2. 提取管道前的最后一段也检查（`echo hi | bash` 中 bash 不安全）
     segments = _split_pipes(cmd_stripped)
 

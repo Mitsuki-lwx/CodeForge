@@ -137,6 +137,7 @@ class ToolRegistry:
         async with lock:
             # --- execute with retries ---
             last_error: Optional[Exception] = None
+            timed_out = False
             attempts = 0
             max_attempts = 1 + tool.max_retries
             timeout = getattr(tool, "timeout_seconds", 30.0)
@@ -156,6 +157,7 @@ class ToolRegistry:
                     return result
 
                 except asyncio.TimeoutError:
+                    timed_out = True
                     last_error = ToolExecutionError(
                         name,
                         f"timed out after {timeout}s (attempt {attempts}/{max_attempts})",
@@ -196,6 +198,7 @@ class ToolRegistry:
                     "tool": name,
                     "retries": attempts - 1,
                     "timeout": timeout,
+                    "timed_out": timed_out,
                 },
             )
 

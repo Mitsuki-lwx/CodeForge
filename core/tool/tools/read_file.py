@@ -58,7 +58,8 @@ class ReadFileTool(Tool):
 
         lines = text.splitlines(keepends=True)
         offset = input.get("offset", 0)
-        limit = input.get("limit", None)
+        # 默认只读前 2000 行,避免一次拉进超大文件(对齐参考项目 tools/read_file.py)
+        limit = input.get("limit", 2000)
 
         if offset > 0 or limit is not None:
             if offset >= len(lines):

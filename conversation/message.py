@@ -40,10 +40,12 @@ class Message:
     tool_use_id: Optional[str] = None
     tool_name: Optional[str] = None
     tool_input: Optional[dict[str, Any]] = None
+    # 思考内容（thinking mode 需在工具调用轮回传给 DeepSeek 等端点）
+    reasoning: str = ""
 
     def to_api(self) -> APIMessage:
         """转为 API 层消息（仅 role + content）。"""
-        return APIMessage(role=self.role.value, content=self.content)
+        return APIMessage(role=self.role.value, content=self.content, reasoning=self.reasoning)
 
 
 @dataclass
@@ -51,9 +53,12 @@ class APIMessage:
     """API 层消息，仅 role + content。
 
     content 可以是纯文本字符串，也可以是内容块列表（用于工具调用）。
+    reasoning 为思考文本（thinking mode），协议客户端按各自 wire format
+    决定如何回传（OpenAI/DeepSeek 放到顶层 reasoning_content）。
     """
     role: str
     content: str | list[dict[str, Any]]
+    reasoning: str = ""
 
 
 def make_text_block(text: str) -> dict[str, Any]:

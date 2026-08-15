@@ -1,0 +1,52 @@
+# CodeForge Hook 示例规则（演示用，按需保留/删除）
+#
+# 规则格式：
+#   name   必填：日志 / once 跟踪 / 冲突检测
+#   event  必填：10 选 1（session_start/session_end/turn_start/turn_end/
+#                 user_message/assistant_message/pre_tool/post_tool/
+#                 agent_error/context_compact）
+#   if     可选：{all:[{field,op,value}...]} 或 {any:[...]}，二选一
+#             op ∈ exact | not | regex | glob
+#   action 必填：type ∈ command | prompt | http | subagent
+#   once   可选：会话内只跑一次
+#   async  可选：后台异步（pre_tool 禁止）
+#   timeout 可选：命令/HTTP 超时（秒，或 "30s"/"1m"）
+
+rules:
+  # 会话启动时注入一句 system prompt 级指令（会话级，/clear 清空）。
+  # 注入内容完全由你配置——不限定语言，可写任何行为约束。
+  - name: concise-reply
+    event: session_start
+    action:
+      type: prompt
+      content: "回复保持简洁，先给结论再展开"
+
+  # 会话启动后跑一次命令（once：同会话只跑一次）
+  - name: startup-note
+    event: session_start
+    once: true
+    action:
+      type: command
+      command: "echo [hook] session started"
+      timeout: 5s
+
+  # pre_tool 拦截：bash 命令含 "rm -rf" 时拦截（非 0 退出 = 拦截，stdout 当拒绝原因）
+  # 注：命令以 `& exit 1` 结尾保证非 0 退出（Windows cmd 分隔符；Linux 用 `; exit 1`）
+  - name: block-rm-rf
+    event: pre_tool
+    if:
+      all:
+        - field: input.command
+          op: regex
+          value: "rm -rf"
+    action:
+      type: command
+      command: "echo [hook] blocked: rm -rf is dangerous & exit 1"
+
+  # post_tool 占位：等 SubAgent 章节对接真实执行
+  - name: review-after-write
+    event: post_tool
+    once: true
+    action:
+      type: subagent
+      prompt: "检查刚写入的文件质量"
