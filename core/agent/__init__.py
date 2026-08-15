@@ -17,19 +17,24 @@ from core.agent.plan_mode import (
     plan_system_reminder,
 )
 
+# 将 run_to_completion 挂载到 Agent 类上
+from core.agent.sub_agent import attach_to_agent
+
+attach_to_agent()
+
 __all__ = [
     "Agent",
     "AgentConfig",
-    "AgentEvent",
-    "TextDelta",
-    "ToolCallStarted",
-    "ToolCallFinished",
-    "IterationUpdate",
-    "AgentFinished",
     "AgentError",
-    "PlanReady",
+    "AgentEvent",
+    "AgentFinished",
+    "IterationUpdate",
     "PlanMode",
-    "plan_system_reminder",
+    "PlanReady",
+    "TextDelta",
+    "ToolCallFinished",
+    "ToolCallStarted",
     "detect_plan_intent",
     "generate_plan_path",
+    "plan_system_reminder",
 ]

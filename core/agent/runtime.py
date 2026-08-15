@@ -44,6 +44,10 @@ class SessionRuntime:
             "core.skills.active", fromlist=["ActiveSkills"]
         ).ActiveSkills()
     )
+    # Hook：运行时持有的 HookRunner（/clear 时 reset 清 once + 注入）
+    hook_runner: object | None = None
+    # SubAgent：后台任务完成通知文本列表（TUI 写入，Agent 下次 run 消费）
+    pending_reminders: list[str] = field(default_factory=list)
     # asyncio 单线程，无需显式锁
 
     def reset_for_new_session(self, ses_ctx: SessionContext) -> None:
@@ -60,4 +64,6 @@ class SessionRuntime:
         self.anchor_msg_len = 0
         self.turn_count = 0
         self.active_skills.clear()
+        if self.hook_runner is not None:
+            self.hook_runner.reset()
         # context_window 与 notes 保留

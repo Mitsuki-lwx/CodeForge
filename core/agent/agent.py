@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from conversation.manager import ConversationManager
 from conversation.message import Message
@@ -50,6 +51,7 @@ from core.context_compression.const import (
     SUMMARY_RESERVE,
 )
 from core.context_compression.token import estimate_tokens, usage_anchor
+from core.hooks.events import HookContext
 from core.permissions.checker import Decision, PermissionChecker
 from core.permissions.dangerous import DangerousCommandDetector
 from core.permissions.modes import PermissionMode
@@ -59,6 +61,17 @@ from core.prompts.builder import PromptBuilder
 from core.prompts.environment import collect_environment
 from core.tool.context import ExecutionContext
 from core.tool.registry import ToolRegistry
+from core.trace.events import (
+    AgentEndEvent,
+    AgentErrorEvent,
+    HookEvent,
+    PermissionEvent,
+    ToolEndEvent,
+    ToolStartEvent,
+)
+from core.trace.events import (
+    CompactEvent as TraceCompactEvent,
+)
 from llm import PromptTooLongError
 from llm.client import LLMClient
 from llm.stream_events import (
@@ -85,6 +98,15 @@ class Agent:
         runtime: SessionRuntime | None = None,
         instructions: str = "",
         memory: str = "",
+        hooks: object | None = None,
+        # ── 子 Agent 扩展参数 ──
+        system_prompt: str | None = None,
+        max_turns: int = 0,
+        permission_mode: PermissionMode | None = None,
+        dont_ask: bool = False,
+        approval_upgrader: object | None = None,
+        trace_audit_dir: str | None = None,
+        loop: object | None = None,  # AgentLoop | None（spec_loop；默认 ReactLoop）
     ) -> None:
         self._registry = registry
         self._client = llm_client
@@ -98,18 +120,33 @@ class Agent:
         # 后台记忆更新任务集合（退出时等待）
         self._memory_tasks: set[asyncio.Task] = set()
 
+        # ── 子 Agent 扩展字段 ──
+        self._system_prompt_override = system_prompt
+        self._max_turns = max_turns
+        self._dont_ask = dont_ask
+        self._approval_upgrader = approval_upgrader
+
         # ── Permission system ──
         self._sandbox = PathSandbox(work_dir=str(exec_ctx.cwd))
         self._detector = DangerousCommandDetector()
         self._rule_engine = RuleEngine()
+        _init_mode = (
+            permission_mode if permission_mode is not None else PermissionMode.DEFAULT
+        )
         self._permission_checker = PermissionChecker(
-            mode=PermissionMode.DEFAULT,
+            mode=_init_mode,
             sandbox=self._sandbox,
             detector=self._detector,
             rule_engine=self._rule_engine,
         )
         self._plan_path: Path | None = None
         self._has_exited_plan_mode: bool = False
+
+        # ── 试验/评测强制拒绝集：命中即 deny（默认空，benchmark edges 注入）──
+        self._deny_tools: set[str] = set()
+
+        # ── 可读身份名（子 Agent 委派时由 Agent 工具 name/role 注入），span 归属用 ──
+        self._agent_name: str = ""
 
         # ── HITL state ──
         self._hitl_event: asyncio.Event = asyncio.Event()
@@ -127,6 +164,98 @@ class Agent:
         # ── Skill system ──
         self._skill_catalog: str = ""
 
+        # ── Hook system ──
+        self._hooks = hooks
+        self._turn_finished = False  # 单轮 run 内 turn_end 只触发一次
+
+        # ── Trace (可观测性审计):惰性建 writer,首条事件产生时才开 audit 文件 ──
+        self._trace_writer: object | None = None  # core.trace.TraceWriter | None
+        self._trace_audit_dir = trace_audit_dir  # 可覆盖 audit 根目录(测试/部署)
+
+        # ── Agent 循环插件化（spec_loop）：默认 ReactLoop（现有行为） ──
+        from core.agent.loop import ReactLoop
+
+        self._loop = loop if loop is not None else ReactLoop()
+
+    def _get_trace_writer(self):
+        """惰性取审计写入器;失败返回 None(采集失败绝不阻断主流程)。"""
+        if self._trace_writer is None:
+            try:
+                from core.trace.writer import TraceWriter
+
+                self._trace_writer = TraceWriter(
+                    self._exec_ctx.session_id, audit_dir=self._trace_audit_dir
+                )
+            except Exception:  # noqa: BLE001 —— trace 初始化失败静默降级
+                self._trace_writer = None
+        return self._trace_writer
+
+    def _trace_record(self, event) -> None:
+        """发一条审计事件;writer 为空或写失败都静默跳过。"""
+        writer = self._get_trace_writer()
+        if writer is not None:
+            try:
+                writer.record(event)
+            except Exception:  # noqa: BLE001 —— 审计失败绝不抛出
+                pass
+
+    def _trace_close(self) -> None:
+        """关闭审计写入器(幂等);未创建过 writer 或已关闭都静默。"""
+        if self._trace_writer is not None:
+            try:
+                self._trace_writer.close()
+            except Exception:  # noqa: BLE001 —— 关闭失败绝不抛出
+                pass
+
+    def _emit_metric(self, name: str, value: float, *, delta: bool = True) -> None:
+        """发一个进程内指标(可观测性);未启用/失败静默。"""
+        try:
+            from core.observability.providers import record_metric
+
+            record_metric(name, value, delta=delta)
+        except Exception:  # noqa: BLE001 —— 可观测性失败绝不抛出
+            pass
+
+    def _emit_tool_span(
+        self,
+        tool_use_id: str,
+        tool_name: str,
+        success: bool,
+        duration_ms: int,
+        retries: int = 0,
+        timed_out: bool = False,
+    ) -> None:
+        """为一次工具执行发一个 OTel span(尽力而为;失败静默)。
+
+        用 tool_use_id 作 span 名,标记 tool_name/success/duration/retries/超时;
+        失败时把 span.status 置为 ERROR(便于在 trace 树里一眼看出红点)。
+        不嵌套父级(并发只读工具下父子关系由 trace JSONL 的 parent_span_id 承担)。
+        """
+        try:
+            from core.observability.providers import get_tracer
+            from llm.llm_span import trace_status_error
+
+            tracer = get_tracer("codeforge.tools")
+            start = getattr(tracer, "start_as_current_span", None)
+            if start is None:
+                return  # 可观测性未启用,直接跳过
+            outer = start(f"tool.{tool_name}")
+            span = outer.__enter__()
+            try:
+                if hasattr(span, "set_attribute"):
+                    span.set_attribute("tool_use_id", tool_use_id)
+                    span.set_attribute("success", success)
+                    span.set_attribute("duration_ms", duration_ms)
+                    span.set_attribute("codeforge.tool.retries", retries)
+                    span.set_attribute("codeforge.tool.timeout", timed_out)
+                    _stamp_agent_attrs(span, self)
+                if not success and hasattr(span, "set_status"):
+                    span.set_status(trace_status_error(), None)
+            finally:
+                outer.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001 —— 可观测性失败绝不抛出
+            pass
+
     # ── Public API ──────────────────────────────────────────────────
 
     @property
@@ -140,6 +269,16 @@ class Agent:
     @property
     def permission_mode(self) -> PermissionMode:
         return self._permission_checker.mode
+
+    @property
+    def max_turns(self) -> int:
+        """子 Agent 最大迭代轮数；0 表示用 config 默认值。"""
+        return self._max_turns if self._max_turns > 0 else self._config.max_iterations
+
+    @property
+    def dont_ask(self) -> bool:
+        """子 Agent 是否启用 dontAsk 模式。"""
+        return self._dont_ask
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -167,6 +306,32 @@ class Agent:
         """设置 Skill catalog 文本（启动时注入一次）。"""
         self._skill_catalog = catalog
 
+    def append_system_prompt(self, suffix: str) -> None:
+        """在现有 system prompt 后追加一段（Coordinator 纪律提示词等）。"""
+        base = self._system_prompt_override or ""
+        self._system_prompt_override = (base + "\n\n" + suffix) if suffix else base
+
+    def set_allowed_tools(self, allowed: list[str]) -> None:
+        """收窄模型可见的工具集（Coordinator 模式剥夺写类工具）。
+
+        仅影响 `_build_tool_defs` 呈现给模型的工具列表；执行时的权限由
+        permission checker 兜底（仍会拒绝被剥夺工具的实际调用）。
+        """
+        self._allowed_tools_override: list[str] | None = list(allowed)
+
+    def set_deny_tools(self, tools: list[str]) -> None:
+        """强制拒绝执行指定工具（命中即 deny）。
+
+        试验/评测路径用：注入一个工具名集，`_check_tool_permission` 对这些工具
+        直接返回 deny → 触发 `codeforge.permission.denied` 指标与工具失败。
+        默认空：不影响正常语义。
+        """
+        self._deny_tools = set(tools)
+
+    def set_agent_name(self, name: str) -> None:
+        """设置可读身份名（子 Agent 委派时注入），span 归属 `codeforge.agent.name` 用。"""
+        self._agent_name = name or ""
+
     def resolve_hitl(self, tool_use_id: str, allowed: bool, choice: str = "") -> None:
         """TUI 调用此方法通知 HITL 结果。"""
         self._hitl_results[tool_use_id] = allowed
@@ -192,10 +357,27 @@ class Agent:
         return self._mode
 
     async def run(self, user_input: str) -> AsyncGenerator[AgentEvent, None]:
-        """运行一次完整的 ReAct 循环。"""
+        """运行一次完整的 ReAct 循环（经 loop 策略，spec_loop）。"""
+        self._turn_finished = False
+        try:
+            async for ev in self._loop.run(self, self._conversation, user_input):
+                yield ev
+        finally:
+            # T9: 轮次结束统一关闭审计写入器(天然完成/错误/取消/异常都走这里)
+            self._trace_close()
+
+    async def _run_loop(self, user_input: str) -> AsyncGenerator[AgentEvent, None]:
+        """ReAct 主循环(被 run 包裹以统一收尾)。"""
+        # ── Hook: 轮次开始（每次 run 入口）──
+        if self._hooks is not None:
+            self._emit_hook(
+                "turn_start", self._hook_ctx("turn_start", user_input=user_input)
+            )
+
         # ① 显式 toggle 命令
         if user_input.strip().lower() == "/plan":
             new_mode = self.toggle_plan_mode()
+            self._finish_turn(user_input, None)
             yield AgentFinished(
                 text=f"Plan mode: {new_mode.value.upper()}",
                 total_usage=self._total_usage,
@@ -211,16 +393,26 @@ class Agent:
 
         self._cancel.clear()
         start_time = time.monotonic()
+        # ── 消费 pending_reminders（后台任务通知等）──
+        if self._runtime is not None and self._runtime.pending_reminders:
+            for reminder in self._runtime.pending_reminders:
+                self._conversation.add_system_reminder(reminder)
+            self._runtime.pending_reminders.clear()
         self._conversation.add_user_message(user_input)
         self._refresh_memory()  # 笔记更新后下次输入生效
+        if self._hooks is not None:
+            self._emit_hook(
+                "user_message", self._hook_ctx("user_message", content=user_input)
+            )
 
         emergency_retried = False  # 单次 run 内最多一次紧急重试
         iteration = 0
-        while iteration < self._config.max_iterations:
+        while iteration < self.max_turns:
             iteration += 1
 
             # 取消检查（轮次边界）
             if self._cancel.is_set():
+                self._finish_turn(user_input, "cancelled")
                 yield AgentError(message="Cancelled", code="cancelled")
                 return
 
@@ -230,7 +422,9 @@ class Agent:
             if self.plan_mode and self._plan_path:
                 plan_path_str = str(self._plan_path)
                 plan_exists = self._plan_path.exists()
-                reminder = build_plan_mode_reminder(plan_path_str, plan_exists, iteration)
+                reminder = build_plan_mode_reminder(
+                    plan_path_str, plan_exists, iteration
+                )
                 self._conversation.add_system_reminder(reminder)
 
             # ── 上下文压缩：每轮自动两层检查 ──
@@ -240,6 +434,21 @@ class Agent:
 
             # ── 一轮 LLM 流式调用 ──
             api_messages, _ = self._conversation.to_api_format()
+            # 迭代级诊断：把「迭代号 + 喂入 payload 字符数」写进本轮 LLM span（纯计算，no-op 安全）
+            try:
+                from core.observability.context import (
+                    set_agent_identity,
+                    set_iteration_meta,
+                )
+                from core.context_compression.token import message_chars
+
+                set_iteration_meta(iteration, message_chars(api_messages))
+                # 主 Agent 身份：id=session_id，name='lead'（与子 agent 区分）
+                set_agent_identity(
+                    str(self._exec_ctx.session_id), self._agent_name or "lead"
+                )
+            except Exception:  # noqa: BLE001 —— 观测辅助失败静默
+                pass
             tools = self._build_tool_defs()
 
             # 构建系统提示（模块化拼装 → 纯字符串）
@@ -249,20 +458,34 @@ class Agent:
                 version=self._prompt_builder._version,
             )
 
-            # ── Skill 注入：catalog + active SOP ──
-            if self._skill_catalog:
-                env_info = self._skill_catalog + "\n\n" + env_info
-            if self._runtime is not None:
-                active_entries = self._runtime.active_skills.snapshot()
-                if active_entries:
-                    env_info = env_info + "\n\n" + _render_active_skills_block(active_entries)
-            assembly = self._prompt_builder.build_assembly(env_info)
-            parts: list[str] = []
-            for cb in assembly.cached:
-                parts.append(cb.content)
-            for ub in assembly.uncached:
-                parts.append(ub.content)
-            full_system = "\n\n".join(parts)
+            # ── 子 Agent 系统提示覆盖：跳过模块化拼装 ──
+            if self._system_prompt_override is not None:
+                full_system = self._system_prompt_override
+                if env_info.strip():
+                    full_system = full_system + "\n\n" + env_info.strip()
+                sys_kwargs = {"system_prompt": full_system}
+            else:
+                # ── Skill 注入：catalog + active SOP ──
+                if self._skill_catalog:
+                    env_info = self._skill_catalog + "\n\n" + env_info
+                if self._runtime is not None:
+                    active_entries = self._runtime.active_skills.snapshot()
+                    if active_entries:
+                        env_info = (
+                            env_info
+                            + "\n\n"
+                            + _render_active_skills_block(active_entries)
+                        )
+                if self._hooks is not None:
+                    injections = self._hooks.inject_store().snapshot()
+                    if injections:
+                        env_info = (
+                            env_info + "\n\n" + _render_hook_injections(injections)
+                        )
+                assembly = self._prompt_builder.build_assembly(env_info)
+                # 稳定块（cached）与变化块（uncached）分离，走 system_blocks 让
+                # adapter 打 cache_control 断点命中前缀缓存（省钱/降首字延迟）。
+                sys_kwargs = {"system_blocks": assembly}
 
             stream_msg = self._conversation.start_assistant_stream()
             tool_uses: list[ToolUse] = []
@@ -271,15 +494,19 @@ class Agent:
 
             try:
                 async for se in self._client.stream_chat(
-                    api_messages, system_prompt=full_system, tools=tools or None,
+                    api_messages,
+                    tools=tools or None,
+                    **sys_kwargs,
                 ):
                     if self._cancel.is_set():
                         self._conversation.finish_stream(stream_msg)
+                        self._finish_turn(user_input, "cancelled")
                         yield AgentError(message="Cancelled", code="cancelled")
                         return
 
                     if isinstance(se, ThinkingChunk):
                         if se.text:
+                            self._conversation.append_reasoning(stream_msg, se.text)
                             yield ThinkingDelta(text=se.text)
 
                     elif isinstance(se, TextChunk):
@@ -294,8 +521,12 @@ class Agent:
                     elif isinstance(se, CompletionDone):
                         self._conversation.finish_stream(stream_msg, se.usage)
                         if se.usage:
-                            self._total_usage["input_tokens"] += se.usage.get("input_tokens", 0)
-                            self._total_usage["output_tokens"] += se.usage.get("output_tokens", 0)
+                            self._total_usage["input_tokens"] += se.usage.get(
+                                "input_tokens", 0
+                            )
+                            self._total_usage["output_tokens"] += se.usage.get(
+                                "output_tokens", 0
+                            )
                             # 更新 usage_anchor（仅主对话路径，摘要请求不经过这里）
                             if self._runtime is not None:
                                 self._runtime.usage_anchor = usage_anchor(se.usage)
@@ -305,7 +536,9 @@ class Agent:
 
                     elif isinstance(se, StreamError):
                         self._conversation.fail_stream(stream_msg, se.message)
-                        error_event = AgentError(message=se.message, code="stream_error")
+                        error_event = AgentError(
+                            message=se.message, code="stream_error"
+                        )
 
             except PromptTooLongError as e:
                 # ── 紧急压缩路径 ──
@@ -325,10 +558,12 @@ class Agent:
                 error_event = AgentError(message=str(e), code="stream_error")
 
             if error_event:
+                self._finish_turn(user_input, error_event.code)
                 yield error_event
                 return
 
             if unknown_count >= self._config.unknown_tool_threshold:
+                self._finish_turn(user_input, "unknown_tool")
                 yield AgentError(
                     message=f"Too many unknown tool requests ({unknown_count})",
                     code="unknown_tool",
@@ -337,7 +572,35 @@ class Agent:
 
             # ── 判断本轮结果 ──
             if not tool_uses:
+                if self._hooks is not None:
+                    self._emit_hook(
+                        "assistant_message",
+                        self._hook_ctx(
+                            "assistant_message",
+                            content=self._get_last_assistant_text(),
+                        ),
+                    )
+                self._finish_turn(user_input, None)
                 elapsed = time.monotonic() - start_time
+                # T7: 自然完成 → 审计 agent_end(耗时 + 总用量)
+                self._trace_record(
+                    AgentEndEvent(
+                        elapsed_s=elapsed,
+                        token=dict(self._total_usage),
+                    )
+                )
+                # 指标:本轮 token 总量(增量累加到进程内快照时为整体,故用设置值)
+                self._emit_metric(
+                    "codeforge.tokens.input",
+                    self._total_usage.get("input_tokens", 0),
+                    delta=False,
+                )
+                self._emit_metric(
+                    "codeforge.tokens.output",
+                    self._total_usage.get("output_tokens", 0),
+                    delta=False,
+                )
+                self._emit_metric("codeforge.agent.elapsed_s", elapsed, delta=False)
                 self._maybe_trigger_memory(user_input)
                 yield AgentFinished(
                     text=self._get_last_assistant_text(),
@@ -364,21 +627,34 @@ class Agent:
                     plan_path=str(self._plan_path),
                     plan_content=plan_content,
                 )
+                self._finish_turn(user_input, None)
                 return
 
         # 迭代上限
+        self._finish_turn(user_input, "max_iterations")
         yield AgentError(
-            message=f"Reached iteration limit ({self._config.max_iterations})",
+            message=f"Reached iteration limit ({self.max_turns})",
             code="max_iterations",
         )
 
     # ── Helpers ──────────────────────────────────────────────────────
 
     def _build_tool_defs(self) -> list[dict[str, Any]]:
-        """返回全部工具定义（不过滤，权限检查在执行时进行）。"""
+        """返回全部工具定义（不过滤，权限检查在执行时进行）。
+
+        若设置了 `_allowed_tools_override`（Coordinator 模式），只返回白名单内的工具。
+        """
+        allowed_override = getattr(self, "_allowed_tools_override", None)
         tools = self._registry.list()
+        if allowed_override is not None:
+            allowed_set = set(allowed_override)
+            tools = [t for t in tools if t.name() in allowed_set]
         return [
-            {"name": t.name(), "description": t.description(), "input_schema": t.input_schema()}
+            {
+                "name": t.name(),
+                "description": t.description(),
+                "input_schema": t.input_schema(),
+            }
             for t in tools
         ]
 
@@ -445,6 +721,13 @@ class Agent:
 
         in_ = self._build_manage_input(est, TriggerKind.AUTO)
         if may_compact:
+            if self._hooks is not None:
+                self._emit_hook(
+                    "context_compact",
+                    self._hook_ctx(
+                        "context_compact", trigger="auto", before_tokens=est
+                    ),
+                )
             yield CompactEvent(phase=CompactPhase.BEFORE_AUTO, before=est)
         try:
             output = await manage_context(in_)
@@ -461,11 +744,33 @@ class Agent:
             runtime.usage_anchor = 0
             runtime.anchor_msg_len = 0
         if may_compact:
+            if self._hooks is not None:
+                self._emit_hook(
+                    "context_compact",
+                    self._hook_ctx(
+                        "context_compact",
+                        trigger="auto",
+                        before_tokens=output.before_tokens,
+                        after_tokens=output.after_tokens,
+                    ),
+                )
+            # T7: 压缩 → 审计 compact(before/after token)
+            self._trace_record(
+                TraceCompactEvent(
+                    phase="after_auto",
+                    before_tokens=output.before_tokens,
+                    after_tokens=output.after_tokens,
+                )
+            )
+            # 压缩「达标」判定：after_tokens 降到阈值以下即可——可能是 layer1 单独
+            # 落盘就压够了（此时 layer2 不会跑，消息条数不变），不该误报「layer2 未完成」。
+            threshold = runtime.context_window - SUMMARY_RESERVE - AUTO_SAFETY_MARGIN
+            reached = output.after_tokens < threshold
             yield CompactEvent(
                 phase=CompactPhase.AFTER_AUTO,
                 before=output.before_tokens,
                 after=output.after_tokens,
-                err=None if layer2_ran else RuntimeError("layer2 未完成"),
+                err=None if reached else RuntimeError("压缩未达标"),
             )
 
     async def _emergency_compact(
@@ -497,8 +802,26 @@ class Agent:
         # 历史已重建，锚点作废
         runtime.usage_anchor = 0
         runtime.anchor_msg_len = 0
+        if self._hooks is not None:
+            self._emit_hook(
+                "context_compact",
+                self._hook_ctx(
+                    "context_compact",
+                    trigger="emergency",
+                    before_tokens=output.before_tokens,
+                    after_tokens=output.after_tokens,
+                ),
+            )
         retry_est = estimate_tokens(0, self._conversation.messages, 0)
         retryable = retry_est < runtime.context_window - MANUAL_SAFETY_MARGIN
+        # T7: 紧急压缩 → 审计 compact(phase=after_emergency)
+        self._trace_record(
+            TraceCompactEvent(
+                phase="after_emergency",
+                before_tokens=output.before_tokens,
+                after_tokens=output.after_tokens,
+            )
+        )
         return retryable, CompactEvent(
             phase=CompactPhase.AFTER_EMERGENCY,
             before=output.before_tokens,
@@ -523,12 +846,91 @@ class Agent:
         output = await manage_context(in_)
         runtime.usage_anchor = 0
         runtime.anchor_msg_len = 0
+        if self._hooks is not None:
+            self._emit_hook(
+                "context_compact",
+                self._hook_ctx(
+                    "context_compact",
+                    trigger="manual",
+                    before_tokens=output.before_tokens,
+                    after_tokens=output.after_tokens,
+                ),
+            )
+        # T7: 手动压缩 → 审计 compact
+        self._trace_record(
+            TraceCompactEvent(
+                phase="after_auto",
+                before_tokens=output.before_tokens,
+                after_tokens=output.after_tokens,
+            )
+        )
         return output.before_tokens, output.after_tokens
 
     # ── 自动笔记 ────────────────────────────────────────────────────
 
+    def set_state_store(self, store) -> None:
+        """注入会话状态存储（spec_session_state）。"""
+        self._state_store = store
+
+    def set_loop(self, loop) -> None:
+        """运行时切换 Agent 循环策略（spec_loop）。"""
+        self._loop = loop
+
+    def switch_model(self, provider) -> None:
+        """运行时切换主模型（/model spec_model_switch）。
+        换 LLM 客户端、模型名、上下文窗口；**不 replace_history**（保留对话）。
+        重复切到同一 provider 视为 no-op（LLMClient.create 幂等建客户端）。
+        """
+        from config.protocol_defaults import effective_context_window
+        from llm.client import LLMClient
+
+        self._client = LLMClient.create(provider)
+        self._prompt_builder._model = provider.model
+        if self._runtime is not None:
+            self._runtime.context_window = effective_context_window(
+                provider.protocol, provider.context_window
+            )
+
+    def _refresh_state(self) -> None:
+        """刷新会话状态注入（约束→cached，目标+待办→uncached）。
+
+        仅当文本变化时 set_state，避免无谓重建（保持缓存稳定）。
+        """
+        store = getattr(self, "_state_store", None)
+        if store is None:
+            return
+        try:
+            cons = store.list_constraints(include_persisted=True)
+            constraints_text = (
+                "## 硬性约束\n" + "\n".join(f"- {c['text']}" for c in cons)
+                if cons
+                else ""
+            )
+            goal = store.get_goal()
+            todos = store.list_todos()
+            parts: list[str] = []
+            if goal:
+                parts.append(f"## 当前目标\n{goal}")
+            if todos:
+                parts.append(
+                    "## 待办\n"
+                    + "\n".join(
+                        f"- [{'x' if t['done'] else ' '}] {t['text']}" for t in todos
+                    )
+                )
+            goals_todos_text = "\n".join(parts)
+            if (
+                constraints_text != self._prompt_builder._state_constraints
+                or goals_todos_text != self._prompt_builder._state_goals_todos
+            ):
+                self._prompt_builder.set_state(constraints_text, goals_todos_text)
+        except Exception:  # noqa: BLE001 —— 状态刷新失败静默，不阻断主流程
+            return
+
     def _refresh_memory(self) -> None:
         """笔记更新后刷新记忆索引注入（仅当内容变化，保持缓存稳定）。"""
+        # 会话状态注入随每轮刷新（约束/目标/待办可能被命令/工具/提炼改动）
+        self._refresh_state()
         runtime = self._runtime
         if runtime is None or runtime.notes is None:
             return
@@ -568,7 +970,10 @@ class Agent:
         provider = self._client.config
         store = runtime.notes
         recent = self._recent_turn_messages()
-        task = asyncio.create_task(update_memory(provider, store, recent))
+        # state 传入提炼通道：可写会话级目标/约束（spec_session_state）
+        task = asyncio.create_task(
+            update_memory(provider, store, recent, getattr(self, "_state_store", None))
+        )
         self._memory_tasks.add(task)
         task.add_done_callback(self._memory_tasks.discard)
 
@@ -582,18 +987,93 @@ class Agent:
         for t in self._memory_tasks - done:
             t.cancel()
 
+    # ── Hook helpers ─────────────────────────────────────────────────
+
+    def _hook_ctx(self, event: str, **extra) -> HookContext:
+        """构造事件 payload 上下文。extra 覆盖事件特化字段。"""
+        runtime = self._runtime
+        return HookContext(
+            event=event,
+            session_id=self._exec_ctx.session_id,
+            cwd=str(self._exec_ctx.cwd),
+            mode=self.permission_mode.value,
+            turn_count=runtime.turn_count if runtime is not None else 0,
+            **extra,
+        )
+
+    def _emit_hook(self, event: str, ctx: HookContext) -> None:
+        """非拦截事件后台异步触发；hook 失败只记日志，绝不中断主流程。"""
+        if self._hooks is None:
+            return
+        try:
+            asyncio.create_task(self._hooks.run(event, ctx))
+        except (RuntimeError, Exception):  # noqa: BLE001 —— 事件循环不可用时静默
+            logger.warning("hook event %s dropped", event)
+
+    def _finish_turn(self, user_input: str, error_code: str | None) -> None:
+        """在所有 run() 出口触发 turn_end；出错时先发 agent_error。
+
+        幂等:每轮只处理一次。hook 与 trace 各自独立,不因一方缺失而跳过另一方。
+        """
+        if self._turn_finished:
+            return
+        self._turn_finished = True
+        if error_code:
+            # T7: 出错终止 → 审计 agent_error(与 hook 的 agent_error 事件对应)
+            self._trace_record(AgentErrorEvent(code=error_code))
+            self._emit_metric("codeforge.agent.errors", 1, delta=True)
+            if self._hooks is not None:
+                self._emit_hook(
+                    "agent_error", self._hook_ctx("agent_error", error_code=error_code)
+                )
+        if self._hooks is not None:
+            self._emit_hook(
+                "turn_end", self._hook_ctx("turn_end", user_input=user_input)
+            )
+
     # ── Tool execution ───────────────────────────────────────────────
 
     async def _execute_tools(
         self, tool_uses: list[ToolUse]
     ) -> AsyncGenerator[AgentEvent, None]:
-        results: dict[str, tuple[bool, str, int]] = {}
+        from core.observability.providers import record_histogram
+
+        # results[id] = (ok, content, duration_ms, tool_meta)
+        results: dict[str, tuple[bool, str, int, dict]] = {}
+
+        # 0. pre_tool hook 前置关卡（位于权限预检之前）
+        if self._hooks is not None:
+            for tu in tool_uses:
+                blocked, reason = await self._hooks.check_pre_tool(
+                    self._hook_ctx("pre_tool", tool_name=tu.name, input=tu.input)
+                )
+                # T4: hook 拦截审计(含放行态,记录本次 pre_tool 判定)
+                self._trace_record(
+                    HookEvent(
+                        tool_name=tu.name,
+                        blocked=blocked,
+                        reason=reason if blocked else "",
+                    )
+                )
+                if blocked:
+                    results[tu.id] = (False, f"Blocked by hook: {reason}", 0, {})
 
         # 1. 权限预检（对所有工具）
         for tu in tool_uses:
             decision = self._check_tool_permission(tu)
+            # T4: 权限决策审计(放行/拒绝/询问 + 理由)
+            self._trace_record(
+                PermissionEvent(
+                    tool_name=tu.name,
+                    tool_use_id=tu.id,
+                    decision=str(decision.effect),
+                    reason=decision.reason,
+                )
+            )
+            if str(decision.effect) == "deny":
+                self._emit_metric("codeforge.permission.denied", 1, delta=True)
             if decision.effect == "deny":
-                results[tu.id] = (False, decision.reason, 0)
+                results[tu.id] = (False, decision.reason, 0, {})
             elif decision.effect == "ask":
                 yield HITLRequired(
                     tool_name=tu.name,
@@ -608,7 +1088,7 @@ class Agent:
                 if allowed:
                     results[tu.id] = await self._exec_one(tu)
                 else:
-                    results[tu.id] = (False, "User denied", 0)
+                    results[tu.id] = (False, "User denied", 0, {})
 
         # 2. 按类型分批执行已放行的工具
         allowed_tus = [tu for tu in tool_uses if tu.id not in results]
@@ -624,30 +1104,100 @@ class Agent:
             for batch in batches:
                 if self._tool_is_readonly(batch[0].name):
                     for tu in batch:
-                        yield ToolCallStarted(tool_use_id=tu.id, name=tu.name, input=tu.input)
+                        self._trace_record(
+                            ToolStartEvent(tool_use_id=tu.id, tool_name=tu.name)
+                        )
+                        yield ToolCallStarted(
+                            tool_use_id=tu.id, name=tu.name, input=tu.input
+                        )
                     coros = [self._exec_one(tu) for tu in batch]
                     batch_results = await asyncio.gather(*coros, return_exceptions=True)
                     for tu, raw in zip(batch, batch_results):
                         if isinstance(raw, BaseException):
-                            results[tu.id] = (False, str(raw), 0)
+                            results[tu.id] = (False, str(raw), 0, {})
                         else:
                             results[tu.id] = raw
-                        success, content, duration_ms = results[tu.id]
+                        success, content, duration_ms, tool_meta = results[tu.id]
+                        self._trace_record(
+                            ToolEndEvent(
+                                tool_use_id=tu.id,
+                                tool_name=tu.name,
+                                success=success,
+                                duration_ms=duration_ms,
+                                result_preview=content[
+                                    : self._config.result_preview_max_chars
+                                ],
+                            )
+                        )
+                        self._emit_metric("codeforge.tool.calls", 1, delta=True)
+                        self._emit_metric(
+                            "codeforge.tool.duration_ms", duration_ms, delta=True
+                        )
+                        self._emit_tool_span(
+                            tu.id,
+                            tu.name,
+                            success,
+                            duration_ms,
+                            retries=tool_meta.get("retries", 0),
+                            timed_out=tool_meta.get("timed_out", False),
+                        )
+                        record_histogram(
+                            "codeforge.tool.duration_ms", duration_ms, unit="ms"
+                        )
                         yield ToolCallFinished(
-                            tool_use_id=tu.id, name=tu.name, input=tu.input,
+                            tool_use_id=tu.id,
+                            name=tu.name,
+                            input=tu.input,
                             success=success,
-                            result_preview=content[: self._config.result_preview_max_chars],
+                            result_preview=content[
+                                : self._config.result_preview_max_chars
+                            ],
                             duration_ms=duration_ms,
                         )
                 else:
                     for tu in batch:
-                        yield ToolCallStarted(tool_use_id=tu.id, name=tu.name, input=tu.input)
+                        self._trace_record(
+                            ToolStartEvent(tool_use_id=tu.id, tool_name=tu.name)
+                        )
+                        yield ToolCallStarted(
+                            tool_use_id=tu.id, name=tu.name, input=tu.input
+                        )
                         results[tu.id] = await self._exec_one(tu)
-                        success, content, duration_ms = results[tu.id]
+                        success, content, duration_ms, tool_meta = results[tu.id]
+                        self._trace_record(
+                            ToolEndEvent(
+                                tool_use_id=tu.id,
+                                tool_name=tu.name,
+                                success=success,
+                                duration_ms=duration_ms,
+                                result_preview=content[
+                                    : self._config.result_preview_max_chars
+                                ],
+                            )
+                        )
+                        self._emit_metric("codeforge.tool.calls", 1, delta=True)
+                        self._emit_metric(
+                            "codeforge.tool.duration_ms", duration_ms, delta=True
+                        )
+                        self._emit_tool_span(
+                            tu.id,
+                            tu.name,
+                            success,
+                            duration_ms,
+                            retries=tool_meta.get("retries", 0),
+                            timed_out=tool_meta.get("timed_out", False),
+                        )
+                        record_histogram(
+                            "codeforge.tool.duration_ms", duration_ms, unit="ms"
+                        )
                         yield ToolCallFinished(
-                            tool_use_id=tu.id, name=tu.name, input=tu.input,
+                            tool_use_id=tu.id,
+                            name=tu.name,
+                            input=tu.input,
                             success=success,
-                            result_preview=content[: self._config.result_preview_max_chars],
+                            result_preview=content[
+                                : self._config.result_preview_max_chars
+                            ],
                             duration_ms=duration_ms,
                         )
 
@@ -655,12 +1205,15 @@ class Agent:
         for tu in tool_uses:
             self._conversation.add_tool_use(tu.id, tu.name, tu.input)
         for tu in tool_uses:
-            success, content, _ = results[tu.id]
+            success, content, _, _ = results[tu.id]
             entry = content if success else f"Error: {content}"
             self._conversation.add_tool_result(tu.id, entry)
 
     def _check_tool_permission(self, tu: ToolUse) -> Decision:
         """检查单个工具调用的权限。"""
+        # 强制拒绝集：命中即 deny（试验/评测注入）
+        if tu.name in getattr(self, "_deny_tools", set()):
+            return Decision(effect="deny", reason="tool denied by forced deny_tools")
         try:
             tool = self._registry.get(tu.name)
             is_read = tool.is_read_only()
@@ -678,7 +1231,11 @@ class Agent:
             tc = "read"
         else:
             tc = "command"
-        return self._permission_checker.check(tu.name, is_read, tc, tu.input)
+        decision = self._permission_checker.check(tu.name, is_read, tc, tu.input)
+        # ── 子 Agent dontAsk 模式：Ask 自动转 Allow ──
+        if self._dont_ask and decision.effect == "ask":
+            return Decision(effect="allow", reason="dontAsk: auto-approved")
+        return decision
 
     def _describe_tool_action(self, tu: ToolUse) -> str:
         """为 HITL 生成人类可读的操作描述。"""
@@ -688,21 +1245,35 @@ class Agent:
         parts = [f"{k}={str(v)[:80]}" for k, v in tu.input.items()]
         return f"[{tu.name}] {', '.join(parts)}" if parts else tu.name
 
-    async def _exec_one(self, tu: ToolUse) -> tuple[bool, str, int]:
+    async def _exec_one(self, tu: ToolUse) -> tuple[bool, str, int, dict]:
         start = time.monotonic()
+        tool_meta: dict = {}
         try:
             result = await self._registry.execute(tu.name, self._exec_ctx, tu.input)
+            tool_meta = dict(result.meta or {})
             if result.success:
                 if tu.name == "read_file" and self._runtime is not None:
                     await self._track_read_file(tu.input)
                 ok, content = True, str(result.data or "")
             else:
                 ok, content = False, result.error or "Unknown error"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             ok, content = False, f"Tool '{tu.name}' timed out"
+            tool_meta["timed_out"] = True
         except Exception as e:
             ok, content = False, str(e)
-        return ok, content, int((time.monotonic() - start) * 1000)
+        if self._hooks is not None:
+            self._emit_hook(
+                "post_tool",
+                self._hook_ctx(
+                    "post_tool",
+                    tool_name=tu.name,
+                    input=tu.input,
+                    tool_result=content[: self._config.result_preview_max_chars],
+                    is_error=not ok,
+                ),
+            )
+        return ok, content, int((time.monotonic() - start) * 1000), tool_meta
 
     async def _track_read_file(self, input: dict[str, Any]) -> None:
         """ReadFile 成功后重读磁盘纯净字节，写入 RecoveryState 供恢复段使用。"""
@@ -730,6 +1301,28 @@ class Agent:
             return False
 
 
+def _stamp_agent_attrs(span: Any, agent: Agent) -> None:
+    """给工具 span 打当前 agent 身份（id + 可读名），供在 Langfuse 按 subagent 聚合。
+
+    优先读 ContextVar（LLM 循环设的）；兜底用 agent 自身字段。尽力而为，绝不抛。
+    """
+    try:
+        from core.observability.context import get_agent_identity
+
+        identity = get_agent_identity()
+        if identity is not None:
+            agent_id, agent_name = identity
+        else:
+            agent_id = str(agent._exec_ctx.session_id)
+            agent_name = getattr(agent, "_agent_name", "") or "lead"
+        if hasattr(span, "set_attribute"):
+            span.set_attribute("codeforge.agent.id", agent_id or "?")
+            if agent_name:
+                span.set_attribute("codeforge.agent.name", agent_name)
+    except Exception:  # noqa: BLE001 —— 观测辅助失败静默
+        return
+
+
 def _render_active_skills_block(entries: list) -> str:
     """将已激活 Skill 的 SOP 渲染为 environment 注入块。
 
@@ -746,6 +1339,23 @@ def _render_active_skills_block(entries: list) -> str:
     for entry in entries:
         parts.append(f"\n### Skill: {entry.name}\n")
         parts.append(entry.body)
+        parts.append("")
+
+    return "\n".join(parts).strip()
+
+
+def _render_hook_injections(injections: list[str]) -> str:
+    """将 Hook prompt 动作注入的文本渲染为 environment 注入块。
+
+    Returns:
+        渲染后的文本，无注入时返回空字符串。
+    """
+    if not injections:
+        return ""
+
+    parts = ["## Hook Injections"]
+    for text in injections:
+        parts.append(text)
         parts.append("")
 
     return "\n".join(parts).strip()
