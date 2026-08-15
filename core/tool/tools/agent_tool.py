@@ -530,6 +530,10 @@ class AgentTool(Tool):
         events: asyncio.Queue = asyncio.Queue(maxsize=64)
 
         final_text = await run_to_completion(sub_agent, sub_conv, args.prompt, events)
+        # 子 agent 出错（run_to_completion 返回 "Error: ..."）→ 结构化 success=False，
+        # 让 Lead 明确知道委派失败，而非拿到一段错误文本当成功。
+        if final_text.startswith("Error:"):
+            return ToolResult(success=False, error=final_text)
         return ToolResult(success=True, data=final_text)
 
     async def _run_background(
