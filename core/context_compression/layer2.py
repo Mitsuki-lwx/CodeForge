@@ -15,6 +15,7 @@ from conversation.message import (
     MessageStatus,
 )
 from core.context_compression.const import (
+    ESTIMATE_CHARS_PER_TOKEN,
     PTL_DROP_PERCENTAGE,
     PTL_RETRY_LIMIT,
     RECENT_KEEP_MESSAGES,
@@ -57,7 +58,9 @@ def pick_recent_tail(msgs: list[Message]) -> list[Message]:
     start_idx = len(msgs)
 
     for i in range(len(msgs) - 1, -1, -1):
-        accumulated_tokens += math.ceil(_single_msg_chars(msgs[i]) / 3.5)
+        accumulated_tokens += math.ceil(
+            _single_msg_chars(msgs[i]) / ESTIMATE_CHARS_PER_TOKEN
+        )
         start_idx = i
         # 从尾部累计的条数
         if (

@@ -105,12 +105,61 @@ def build_preview(
 # ── offload_and_snip 主体 ────────────────────────────────────────
 
 
+def _snip_one(
+    state: ContentReplacementState,
+    session: SessionContext,
+    tid: str,
+    content: str,
+    aggregate_bytes: int,
+) -> tuple[str, int]:
+    """对单个 tool_result 做落盘决策，返回 (new_content, spilled_bytes)。
+
+    new_content 为原文或预览体；spilled_bytes 为本次实际落盘的字节数（未落盘为 0）。
+    决策经 state.decide_once 幂等冻结：同 tid 复用存量，不再重新落盘。
+    """
+    spilled = 0
+
+    def _decide() -> tuple[str, str]:
+        nonlocal spilled
+        should_spill = (
+            len(content.encode("utf-8")) > SINGLE_RESULT_LIMIT
+            or aggregate_bytes > MESSAGE_AGGREGATE_LIMIT
+        )
+        if should_spill:
+            try:
+                spill_single(session, tid, content)
+            except OSError:
+                logger.warning(
+                    "落盘失败 tool_use_id=%s，降级为保留原文",
+                    tid,
+                )
+                return ("skip", "")
+            spill_path = str(Path(session.spill_dir) / tid)
+            preview = build_preview(
+                len(content.encode("utf-8")),
+                _head_preview(content),
+                spill_path,
+            )
+            spilled = len(content.encode("utf-8"))
+            return ("replaced", preview)
+        return ("kept", "")
+
+    new_content = state.decide_once(tid, content, _decide)
+    return new_content, spilled
+
+
 def offload_and_snip(
     msgs: list[Message],
     state: ContentReplacementState,
     session: SessionContext,
 ) -> list[Message]:
     """遍历消息列表，对 tool_result 做落盘 + 预览替换。
+
+    支持两种 tool_result 形态：
+      - 扁平形态（生产真实形态）：role=user + tool_use_id 非空 + content 为 str。
+        `ConversationManager.add_tool_result` 即产生此形态。
+      - block 形态（兼容旧测试/其他调用方）：role=user + content 为 list[dict]，
+        其中每个 `type=="tool_result"` 块承载一条工具结果。
 
     规则：
       1. 已 Seen 的 tool_use_id → 通过 decide_once 复用存量决策
@@ -121,21 +170,24 @@ def offload_and_snip(
       3. 落盘失败 → 降级为不替换、不写账本（"skip"）
 
     返回新的 list[Message]，不修改入参。
-
-    Args:
-        msgs: 对话消息列表。
-        state: 替换决策账本。
-        session: 会话上下文。
-
-    Returns:
-        处理后的消息列表（深拷贝）。
     """
     out = copy.deepcopy(msgs)
 
     for msg in out:
-        # CodeForge 中 tool_result 挂在 role=user 消息的 content blocks 中
         if msg.role.value != "user":
             continue
+
+        # ── 扁平形态（生产真实形态）──
+        if isinstance(msg.content, str) and msg.tool_use_id:
+            tid = msg.tool_use_id
+            content = msg.content
+            new_content, _ = _snip_one(
+                state, session, tid, content, len(content.encode("utf-8"))
+            )
+            msg.content = new_content
+            continue
+
+        # ── block 形态（兼容）──
         if not isinstance(msg.content, list):
             continue
 
@@ -175,42 +227,11 @@ def offload_and_snip(
         # 计算聚合字节（仅未 Seen 的项需判断聚合）
         remaining_bytes = sum(c[3] for c in candidates)
 
-        for idx, tid, content, cb in candidates:
-
-            def _decide(
-                _tid=tid,
-                _content=content,
-                _idx=idx,
-            ) -> tuple[str, str]:
-                nonlocal remaining_bytes
-                should_spill = False
-                if (
-                    len(_content.encode("utf-8")) > SINGLE_RESULT_LIMIT
-                    or remaining_bytes > MESSAGE_AGGREGATE_LIMIT
-                ):
-                    should_spill = True
-
-                if should_spill:
-                    try:
-                        spill_single(session, _tid, _content)
-                    except OSError:
-                        logger.warning(
-                            "落盘失败 tool_use_id=%s，降级为保留原文",
-                            _tid,
-                        )
-                        return ("skip", "")
-                    spill_path = str(Path(session.spill_dir) / _tid)
-                    preview = build_preview(
-                        len(_content.encode("utf-8")),
-                        _head_preview(_content),
-                        spill_path,
-                    )
-                    remaining_bytes -= len(_content.encode("utf-8"))
-                    return ("replaced", preview)
-                else:
-                    return ("kept", "")
-
-            new_content = state.decide_once(tid, content, _decide)
+        for idx, tid, content, _cb in candidates:
+            new_content, spilled = _snip_one(
+                state, session, tid, content, remaining_bytes
+            )
+            remaining_bytes -= spilled
             msg.content[idx] = make_tool_result_block(tid, new_content)
 
     return out
