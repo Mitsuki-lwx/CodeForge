@@ -1,6 +1,12 @@
-"""LLM 客户端抽象基类。
+"""LLM 客户端抽象基类 + 工厂。
 
-定义统一的流式对话接口，各协议实现此接口。"""
+对外接口保持不变（调用方/测试大量依赖）：
+  - LLMClient(ABC)，抽象方法 stream_chat(messages, system_prompt, tools, system_blocks)
+  - create(config) / create_with_model(config, model)
+  - 每个实例暴露 .config
+
+具体协议行为由 AbstractSession 适配器（见 adapters/）在薄子类里实现。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +20,7 @@ from llm.stream_events import StreamEvent
 
 
 class LLMClient(ABC):
-    """LLM 客户端抽象基类。"""
+    """LLM 客户端抽象基类（协议无关，供消费方与测试稳定依赖）。"""
 
     def __init__(self, config: ProviderConfig) -> None:
         self.config = config
@@ -27,43 +33,27 @@ class LLMClient(ABC):
         tools: list[dict[str, Any]] | None = None,
         system_blocks: Any = None,  # PromptAssembly | None
     ) -> AsyncGenerator[StreamEvent, None]:
-        """向 LLM 发起流式对话请求。
-
-        Args:
-            messages: user/assistant 交替的消息列表（支持内容块）。
-            system_prompt: 系统提示词，按协议放入对应参数位置。
-            tools: 工具定义列表（每个工具含 name, description, input_schema）。
-            system_blocks: (可选) PromptAssembly，包含 cached/uncached 块。
-                           传此参数时，子类按各自协议处理缓存断点。
-
-        Yields:
-            StreamEvent: TextChunk、ToolUse、CompletionDone 或 StreamError。
-        """
+        """向 LLM 发起流式对话请求（契约见各子类/测试）。"""
         ...
 
     @classmethod
     def create(cls, config: ProviderConfig) -> LLMClient:
-        """工厂方法：根据协议类型创建对应客户端实例。"""
-        if config.protocol == "anthropic":
+        """工厂：按 protocol + vendor 协商出匹配的客户端实现。"""
+        from llm.protocol import resolve_adapter_class
+
+        adapter_cls = resolve_adapter_class(
+            config.protocol, config.vendor, config.model, config.base_url
+        )
+        if adapter_cls.__name__.startswith("Anthropic"):
             from llm.anthropic_client import AnthropicClient
             return AnthropicClient(config)
-        elif config.protocol == "openai":
+        else:
             from llm.openai_client import OpenAIClient
             return OpenAIClient(config)
-        else:
-            raise ValueError(f"不支持的协议类型：{config.protocol}")
 
     @classmethod
     def create_with_model(cls, config: ProviderConfig, model: str) -> LLMClient:
-        """基于现有配置创建客户端，但覆盖模型名（Skill 指定模型用）。
-
-        Args:
-            config: 基础 ProviderConfig（沿用协议/密钥/端点）。
-            model: 覆盖后的模型名。
-
-        Returns:
-            使用新模型名的 LLMClient 实例。
-        """
+        """基于现有配置创建客户端，但覆盖模型名（Skill 指定模型用）。"""
         from dataclasses import replace
 
         return cls.create(replace(config, model=model))

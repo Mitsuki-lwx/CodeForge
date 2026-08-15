@@ -5,8 +5,8 @@ LLM 客户端将各协议的 SSE 流式响应解析为统一的内部事件类�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -32,8 +32,8 @@ class ToolUse:
 @dataclass
 class CompletionDone:
     """流式回复结束信号。"""
-    usage: Optional[dict[str, Any]] = None
-    stop_reason: Optional[str] = None
+    usage: dict[str, Any] | None = None
+    stop_reason: str | None = None
     cache_creation_input_tokens: int = 0
     """缓存写入 token 数（Anthropic: cache_creation_input_tokens）。"""
     cache_read_input_tokens: int = 0
@@ -44,7 +44,7 @@ class CompletionDone:
 class StreamError:
     """流式过程中发生的错误。"""
     message: str
-    code: Optional[str] = None
+    code: str | None = None
 
 
 StreamEvent = TextChunk | ThinkingChunk | ToolUse | CompletionDone | StreamError
