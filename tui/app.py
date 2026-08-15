@@ -154,6 +154,15 @@ class CodeForgeApp:
     def session_state(self) -> object | None:
         return self.state
 
+    async def mcp_list(self) -> list[dict]:
+        if self.mcp_pool is None:
+            return []
+        try:
+            all_tools = await self.mcp_pool.list_all_tools()
+        except Exception:  # noqa: BLE001 —— 查询失败返回空，不阻断
+            return []
+        return [{"name": name, "tools": tools} for name, tools in all_tools.items()]
+
     def println(self, msg: str) -> None:
         self.console.print(f"[dim]{msg}[/]")
 

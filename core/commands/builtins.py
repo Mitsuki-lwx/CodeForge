@@ -11,6 +11,7 @@ from core.commands.builtin_local import (
     handle_status,
     make_help_handler,
 )
+from core.commands.builtin_mcp import handle_mcp
 from core.commands.builtin_model import handle_model
 from core.commands.builtin_prompt import handle_do
 from core.commands.builtin_state import handle_constraint, handle_goal, handle_todo
@@ -191,6 +192,14 @@ def register_builtins(reg: Registry) -> None:
             description="运行时切换主模型（方向键重选，保留当前对话）",
             kind=Kind.LOCAL,
             handler=handle_model,
+        )
+    )
+    reg.register(
+        Command(
+            name="mcp",
+            description="列出已配置/已连接的 MCP 服务器及各自工具",
+            kind=Kind.LOCAL,
+            handler=handle_mcp,
         )
     )
     # /skill 命令在 _run_async 中注册（需要注入 SkillLoader 和 SkillExecutor）

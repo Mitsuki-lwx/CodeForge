@@ -73,6 +73,9 @@ class UI(Protocol):
     # ── 会话状态系统（spec_session_state）──
     def session_state(self) -> object | None: ...
 
+    # ── MCP 系统 ──
+    async def mcp_list(self) -> list[dict]: ...
+
     # ── 模型切换（spec_model_switch）──
     def providers(self) -> list: ...
     def switch_model(self, provider) -> None: ...
@@ -193,6 +196,11 @@ class NopUI:
 
     def session_state(self) -> object | None:
         return None
+
+    # ── MCP 系统 ──
+
+    async def mcp_list(self) -> list[dict]:
+        return []
 
     # ── 模型切换 ──
 
