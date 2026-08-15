@@ -118,6 +118,9 @@ class Agent:
         # 运行阶段状态机（idle/running；参考 deepseek-harness phase）。
         # 供治理/观测准确判断「空闲 vs 运行中」，cancel 语义区分的基础。
         self._phase: str = "idle"
+        # 本轮 turn 结束原因（completed/max-tokens/blocked）；max-tokens sticky：
+        # 一旦某 step 触顶，本轮最终原因固定为 max-tokens，后续 step 正常完成不降级。
+        self._turn_end_reason: str = "completed"
         self._total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         self._runtime = runtime
         # 后台记忆更新任务集合（退出时等待）
@@ -372,6 +375,7 @@ class Agent:
         """运行一次完整的 ReAct 循环（经 loop 策略，spec_loop）。"""
         self._turn_finished = False
         self._phase = "running"
+        self._turn_end_reason = "completed"
         try:
             async for ev in self._loop.run(self, self._conversation, user_input):
                 yield ev
@@ -395,6 +399,7 @@ class Agent:
             yield AgentFinished(
                 text=f"Plan mode: {new_mode.value.upper()}",
                 total_usage=self._total_usage,
+                turn_end_reason=self._turn_end_reason,
             )
             return
 
@@ -510,6 +515,7 @@ class Agent:
                 except Exception:  # noqa: BLE001 —— hook 故障 fail-open，不误伤正常轮
                     _blocked = False
                 if _blocked:
+                    self._turn_end_reason = "blocked"
                     self._finish_turn(user_input, "pre_step_blocked")
                     yield AgentError(
                         message=_reason or "pre_step blocked",
@@ -563,6 +569,10 @@ class Agent:
                                 self._runtime.anchor_msg_len = len(
                                     self._conversation.messages
                                 )
+                        # max-tokens 触顶 → 本轮结束原因固定为 max-tokens（sticky，
+                        # 后续 step 正常完成不降级回 completed）
+                        if se.stop_reason in ("max_tokens", "length"):
+                            self._turn_end_reason = "max-tokens"
 
                     elif isinstance(se, StreamError):
                         self._conversation.fail_stream(stream_msg, se.message)
@@ -637,6 +647,7 @@ class Agent:
                     total_usage=self._total_usage,
                     iterations=iteration,
                     elapsed_s=elapsed,
+                    turn_end_reason=self._turn_end_reason,
                 )
                 return
 

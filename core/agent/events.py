@@ -96,6 +96,7 @@ class AgentFinished:
     total_usage: dict[str, int] = field(default_factory=dict)
     iterations: int = 0
     elapsed_s: float = 0.0
+    turn_end_reason: str = "completed"  # completed / max-tokens（触顶 sticky）/ blocked
 
 
 @dataclass
