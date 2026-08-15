@@ -1025,6 +1025,22 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
     console = Console()
     workspace = Path.cwd()
 
+    # 崩溃恢复提示：启动时若有最近会话（进程异常退出后 JSONL 仍在），提示可 /resume 继续。
+    # 仅交互模式；无头(--task)不打扰。
+    if not task:
+        try:
+            from core.archive import list_sessions
+
+            items = list_sessions(workspace)
+            if items:
+                recent = items[0]
+                console.print(
+                    f"[dim]最近会话: {recent.title} ({recent.relative_time}) — "
+                    f"/resume 可恢复[/]"
+                )
+        except Exception:  # noqa: BLE001 —— 提示失败不阻断启动
+            return
+
     # 项目指令 + 记忆索引（启动时加载一次，F45）
     instructions = load_instructions(str(workspace))
     notes = NoteStore(workspace)
