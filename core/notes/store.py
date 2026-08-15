@@ -21,6 +21,10 @@ NOTE_TYPES = frozenset(
         "correction_feedback",
         "project_knowledge",
         "reference_material",
+        # 会话状态（spec_session_state）：约束提升到 memory 时落 project/user
+        "hard_constraint",
+        "session_goal",
+        "task_todo",
     }
 )
 
@@ -48,6 +52,11 @@ def _safe_filename(name: str) -> str:
     if not cleaned or cleaned in ("..", ".") or ".." in cleaned:
         raise ValueError(f"非法笔记文件名: {name!r}")
     return cleaned
+
+
+def _normalize_title(title: str) -> str:
+    """标题归一：小写 + 去空白/符号，用于相似判定（对齐 slug 归一思路）。"""
+    return re.sub(r"\s+", "", (title or "").lower()).strip("_")
 
 
 def _first_line(text: str) -> str:
@@ -135,6 +144,84 @@ class NoteStore:
             )
             self._rebuild_index(level)
         return path
+
+    def upsert_note(
+        self,
+        level: str,
+        note_type: str,
+        title: str,
+        slug: str,
+        content: str,
+    ) -> Path:
+        """写入笔记；遇重复则覆盖（update）而非新建（create）。
+
+        确定性去重兜底（LLM 判断去重不可靠时兜住）：
+          ① 同 level 同 type 下，title 归一相同 或 body 前 80 字符相同 → 覆盖那条；
+          ② 同 slug 文件已存在 → 覆盖（保留原 created）；
+          ③ 否则新建。
+        返回命中的或新建的笔记文件路径。
+        """
+        if note_type not in NOTE_TYPES:
+            raise ValueError(f"非法笔记类型: {note_type!r}")
+        d = self._dir(level)
+        with self._lock:
+            d.mkdir(parents=True, exist_ok=True)
+
+            # ① 内容/标题相似 → 覆盖那条
+            existing = self._find_similar(d, note_type, title, content)
+            if existing is not None:
+                self._overwrite_note(existing, title, content)
+                self._rebuild_index(level)
+                return existing
+
+            # ② 同 slug 文件已存在 → 覆盖
+            path = d / f"{note_type}_{_safe_slug(slug)}.md"
+            if path.exists():
+                self._overwrite_note(path, title, content)
+                self._rebuild_index(level)
+                return path
+
+            # ③ 新建
+            now = _now_iso()
+            path.write_text(
+                _render_note(note_type, title, now, now, content), encoding="utf-8"
+            )
+            self._rebuild_index(level)
+            return path
+
+    def _find_similar(
+        self, d: Path, note_type: str, title: str, content: str
+    ) -> Path | None:
+        """同目录同 type 下找「相似」笔记：title 归一相同 或 body 前 80 字符相同。"""
+        norm_title = _normalize_title(title)
+        head = (content or "").strip()[:80]
+        for p in sorted(d.glob("*.md")):
+            if p.name == INDEX_FILENAME:
+                continue
+            try:
+                fm = _parse_note(p)
+            except (OSError, ValueError):
+                continue
+            if fm["type"] != note_type:
+                continue
+            if norm_title and _normalize_title(fm["title"]) == norm_title:
+                return p
+            existing_head = fm["body"].strip()[:80]
+            if head and existing_head and (
+                head.startswith(existing_head) or existing_head.startswith(head)
+            ):
+                return p
+        return None
+
+    def _overwrite_note(self, path: Path, title: str, content: str) -> None:
+        """覆盖已有笔记：保留原 created，更新 title/body/updated。"""
+        parsed = _parse_note(path)
+        path.write_text(
+            _render_note(
+                parsed["type"], title, parsed["created"], _now_iso(), content
+            ),
+            encoding="utf-8",
+        )
 
     def update_note(self, level: str, filename: str, title: str, content: str) -> None:
         with self._lock:

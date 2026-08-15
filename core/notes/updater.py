@@ -34,6 +34,10 @@ _MEMORY_INSTRUCTION = """你是 CodeForge 的记忆管理助手。根据「当�
   slug 全小写下划线，如 api_conventions
 - 更新：{"action":"update","level":"user","filename":"user_preference_terse.md","title":"...","content":"..."}
 - 删除：{"action":"delete","level":"project","filename":"project_knowledge_old.md"}
+- 会话状态（spec_session_state，可选）：
+  对话中出现「用户明确的新目标」→ {"action":"set_goal","text":"..."}
+  对话中出现「用户明确的硬性约束/边界」（如“别改某文件”“只能用某库”）→ {"action":"add_constraint","text":"..."}
+  两者默认会话级，不做跨会话提升。
 不需要任何变更时返回 []。
 
 去重与合并由你判断：索引中已有相似内容就更新或跳过，不要重复创建。
@@ -95,14 +99,16 @@ async def _request_ops(provider_config, index: str, conversation: str) -> list[d
     return _extract_json_array("".join(text_buf))
 
 
-def _apply_ops(store, ops: list[dict]) -> None:
-    """执行笔记操作；单条失败仅告警不影响其余。"""
+def _apply_ops(store, ops: list[dict], state=None) -> None:
+    """执行笔记操作；单条失败仅告警不影响其余。state 为 SessionStateStore|None。"""
     for op in ops:
         action = op.get("action")
         level = op.get("level", "project")
         try:
             if action == "create":
-                store.create_note(
+                # 确定性去重兜底：遇重复（同标题/同内容/同 slug）转 update 覆盖，
+                # 不再因 FileExistsError 静默失败导致重复笔记累积。
+                store.upsert_note(
                     level,
                     op.get("type", ""),
                     op.get("title", ""),
@@ -118,16 +124,25 @@ def _apply_ops(store, ops: list[dict]) -> None:
                 )
             elif action == "delete":
                 store.delete_note(level, op.get("filename", ""))
+            elif action == "set_goal" and state is not None:
+                state.set_goal(op.get("text", ""))
+            elif action == "add_constraint" and state is not None:
+                state.add_constraint(op.get("text", ""))
+            elif action in ("set_goal", "add_constraint"):
+                logger.warning("会话状态未注入，忽略 %s", action)
             else:
                 logger.warning("未知记忆操作: %s", action)
         except Exception as e:  # noqa: BLE001 —— 单条失败静默
             logger.warning("记忆操作失败 %s: %s", action, e)
 
 
-async def update_memory(provider_config, store, recent_messages: list[Message]) -> None:
+async def update_memory(
+    provider_config, store, recent_messages: list[Message], state=None
+) -> None:
     """后台执行一次记忆更新（F36-F42）。
 
     只读 recent_messages 快照、只写 memory 目录；任何失败仅告警。
+    state 为 SessionStateStore | None，用于写会话级目标/约束（提炼通道）。
     """
     try:
         from core.context_compression.summary_prompt import serialize_conversation
@@ -136,6 +151,6 @@ async def update_memory(provider_config, store, recent_messages: list[Message]) 
         conversation = serialize_conversation(recent_messages or [])
         ops = await _request_ops(provider_config, index, conversation)
         if ops:
-            _apply_ops(store, ops)
+            _apply_ops(store, ops, state)
     except Exception:
         logger.exception("记忆更新失败")
