@@ -501,6 +501,22 @@ class Agent:
                 # adapter 打 cache_control 断点命中前缀缓存（省钱/降首字延迟）。
                 sys_kwargs = {"system_blocks": assembly}
 
+            # ── pre_step 钩子：每轮 LLM 前拦截（治理/限流/预算），blocked → 停止本轮 ──
+            if self._hooks is not None:
+                try:
+                    _blocked, _reason = await self._hooks.check_pre_step(
+                        self._hook_ctx("pre_step", iteration=iteration)
+                    )
+                except Exception:  # noqa: BLE001 —— hook 故障 fail-open，不误伤正常轮
+                    _blocked = False
+                if _blocked:
+                    self._finish_turn(user_input, "pre_step_blocked")
+                    yield AgentError(
+                        message=_reason or "pre_step blocked",
+                        code="pre_step_blocked",
+                    )
+                    return
+
             stream_msg = self._conversation.start_assistant_stream()
             tool_uses: list[ToolUse] = []
             unknown_count = 0

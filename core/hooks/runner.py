@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # 事件 → 默认条件字段（if 省略 field 时使用）
 DEFAULT_FIELDS: dict[str, str] = {
     "pre_tool": "tool_name",
+    "pre_step": "iteration",
     "post_tool": "tool_name",
     "turn_start": "user_input",
     "turn_end": "user_input",
@@ -153,6 +154,40 @@ class HookRunner:
                 return True, outcome.reason
         return False, ""
 
+    # ── 拦截判定（pre_step：每轮 LLM 前，agent 循环级）───────────
+
+    async def check_pre_step(self, ctx: HookContext) -> tuple[bool, str]:
+        """同步串行执行 pre_step 规则；任一命令非 0 退出 → (True, 原因)。
+
+        与 check_pre_tool 同契约（fail-open：hook 故障不误伤正常轮次）。
+        """
+        for rule in self._rules:
+            if rule.event != "pre_step":
+                continue
+            if rule.once and rule.name in self._once:
+                continue
+            if not _match_rule(rule, ctx):
+                continue
+            if rule.async_run:
+                continue
+            if rule.once:
+                self._once.add(rule.name)
+            try:
+                outcome = await self._exec_action(rule, ctx)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 —— 失败 fail-open
+                logger.warning("[hook %s] %s failed: %s", rule.name, "pre_step", e)
+                continue
+            if outcome.err is not None:
+                logger.warning(
+                    "[hook %s] %s failed: %s", rule.name, "pre_step", outcome.err
+                )
+                continue
+            if outcome.blocked:
+                return True, outcome.reason
+        return False, ""
+
     # ── 动作执行 ──────────────────────────────────────────────
 
     async def _exec_action(self, rule: HookRule, ctx: HookContext) -> _Outcome:
@@ -173,7 +208,7 @@ class HookRunner:
         return _Outcome(err=RuntimeError(f"unknown action type: {a.type}"))
 
     async def _run_command(self, rule: HookRule, ctx: HookContext) -> _Outcome:
-        blocking = rule.event == "pre_tool"
+        blocking = rule.event in ("pre_tool", "pre_step")
         proc = await asyncio.create_subprocess_shell(
             rule.action.command,
             stdin=asyncio.subprocess.PIPE,
