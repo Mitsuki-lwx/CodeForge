@@ -115,6 +115,9 @@ class Agent:
         self._config = config or AgentConfig()
         self._mode: PlanMode = PlanMode.OFF
         self._cancel: asyncio.Event = asyncio.Event()
+        # 运行阶段状态机（idle/running；参考 deepseek-harness phase）。
+        # 供治理/观测准确判断「空闲 vs 运行中」，cancel 语义区分的基础。
+        self._phase: str = "idle"
         self._total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         self._runtime = runtime
         # 后台记忆更新任务集合（退出时等待）
@@ -280,6 +283,15 @@ class Agent:
         """子 Agent 是否启用 dontAsk 模式。"""
         return self._dont_ask
 
+    @property
+    def running(self) -> bool:
+        """是否处于运行中（run 生命周期内）。供治理/观测准确判断。"""
+        return self._phase == "running"
+
+    def set_phase(self, phase: str) -> None:
+        """显式设置运行阶段（idle/running）。"""
+        self._phase = phase
+
     def cancel(self) -> None:
         self._cancel.set()
 
@@ -359,12 +371,14 @@ class Agent:
     async def run(self, user_input: str) -> AsyncGenerator[AgentEvent, None]:
         """运行一次完整的 ReAct 循环（经 loop 策略，spec_loop）。"""
         self._turn_finished = False
+        self._phase = "running"
         try:
             async for ev in self._loop.run(self, self._conversation, user_input):
                 yield ev
         finally:
             # T9: 轮次结束统一关闭审计写入器(天然完成/错误/取消/异常都走这里)
             self._trace_close()
+            self._phase = "idle"
 
     async def _run_loop(self, user_input: str) -> AsyncGenerator[AgentEvent, None]:
         """ReAct 主循环(被 run 包裹以统一收尾)。"""
