@@ -57,6 +57,36 @@ def _build_system_blocks(system_blocks: Any) -> list[dict]:
     return blocks
 
 
+def _mark_last_message_cacheable(api_messages: list[dict[str, Any]]) -> None:
+    """在最后一条消息的最后一个 content 块上打 cache_control 断点。
+
+    目的：把缓存断点延伸到对话历史。原生 Anthropic 端点只缓存断点之前的
+    前缀——若不在这里打点，长对话下逐轮累积的历史每轮重发都不会命中缓存
+    （仅系统前缀命中）。此处补第二个断点后，与系统断点构成增量缓存：
+    稳定系统前缀 + 对话历史都能命中。
+
+    DeepSeek 兼容端点自带自动前缀缓存（忽略断点也能命中历史），此改动
+    主要面向原生 Anthropic 端点，对 DeepSeek 无副作用。
+
+    Anthropic API：所有 content block 类型（text/tool_use/tool_result）均接受
+    cache_control 字段（见 anthropic-sdk-python TextBlockParam/ToolParam 等）。
+    """
+    if not api_messages:
+        return
+    last = api_messages[-1]
+    content = last.get("content")
+    if isinstance(content, str):
+        # 纯文本字符串 → 转成 text 块数组（断点只能打在块上）
+        blocks = [{"type": "text", "text": content}] if content else []
+        last["content"] = blocks
+    elif isinstance(content, list):
+        blocks = content
+    else:
+        blocks = []
+    if blocks:
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
+
+
 class AnthropicAdapter(Adapter):
     """Anthropic Messages wire + 解析。"""
 
@@ -121,6 +151,9 @@ class AnthropicAdapter(Adapter):
             else:
                 entry["content"] = content
             api_messages.append(entry)
+
+        # 缓存断点延伸到对话历史（原生 Anthropic 端点长对话缓存，见 helper 注释）
+        _mark_last_message_cacheable(api_messages)
 
         body: dict[str, Any] = {
             "model": self.config.model,
