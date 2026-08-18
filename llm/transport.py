@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -72,5 +73,14 @@ async def post_stream(
                 )
                 return
             yield RawResponse(response.status_code)
-            async for line in response.aiter_lines():
-                yield line
+            # 显式持有内层 aiter_lines 生成器，而不是直接 `async for`：
+            # 中途被关闭（GeneratorExit/取消）时，先在 finally 里关掉它，
+            # 级联关闭底层 httpx 流，避免 async with 退出时 response.aclose()
+            # 撞上仍挂在迭代上的内层生成器（RuntimeError: already running）。
+            lines = response.aiter_lines()
+            try:
+                async for line in lines:
+                    yield line
+            finally:
+                with suppress(RuntimeError):
+                    await lines.aclose()
