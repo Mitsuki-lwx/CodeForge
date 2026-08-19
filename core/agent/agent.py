@@ -1131,19 +1131,19 @@ class Agent:
                 else:
                     results[tu.id] = (False, "User denied", 0, {})
 
-        # 2. 按类型分批执行已放行的工具
+        # 2. 按并发安全性分批执行已放行的工具
         allowed_tus = [tu for tu in tool_uses if tu.id not in results]
         if allowed_tus:
             batches: list[list[ToolUse]] = []
             for tu in allowed_tus:
-                is_read = self._tool_is_readonly(tu.name)
-                if batches and is_read == self._tool_is_readonly(batches[-1][0].name):
+                safe = self._tool_is_parallel_safe(tu)
+                if batches and safe == self._tool_is_parallel_safe(batches[-1][0]):
                     batches[-1].append(tu)
                 else:
                     batches.append([tu])
 
             for batch in batches:
-                if self._tool_is_readonly(batch[0].name):
+                if self._tool_is_parallel_safe(batch[0]):
                     for tu in batch:
                         self._trace_record(
                             ToolStartEvent(tool_use_id=tu.id, tool_name=tu.name)
@@ -1340,6 +1340,20 @@ class Agent:
             return self._registry.get(name).is_read_only()
         except Exception:
             return False
+
+    def _tool_is_parallel_safe(self, tu: ToolUse) -> bool:
+        """工具是否可并发执行：只读 OR 声明并发安全（如隔离/只读子代理）。
+
+        Agent 工具对隔离（worktree）或只读子代理返回并发安全，共享工作区
+        可写子代理返回不安全（会互相改文件冲突），从而进入串行分支。
+        """
+        try:
+            tool = self._registry.get(tu.name)
+        except Exception:
+            return False
+        if tool.is_read_only():
+            return True
+        return tool.is_concurrency_safe(tu.input)
 
 
 def _stamp_agent_attrs(span: Any, agent: Agent) -> None:

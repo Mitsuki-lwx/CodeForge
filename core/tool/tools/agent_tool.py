@@ -165,7 +165,25 @@ class AgentTool(Tool):
         return False
 
     def is_concurrency_safe(self, input: dict) -> bool:
-        return True
+        """子 Agent 并行安全：worktree 隔离 OR 只读角色 → 安全。
+
+        共享工作区 + 可写子代理不安全——多个子代理会互相改文件冲突，
+        返回 False 让上层（批处理）走串行分支。
+        """
+        subagent_type = input.get("subagent_type", "")
+        if not subagent_type or self._catalog is None:
+            return False  # fork 或未知 → 保守串行
+        try:
+            role = self._catalog.resolve(subagent_type)
+        except Exception:  # noqa: BLE001 —— 解析失败保守串行
+            return False
+        if role is None:
+            return False
+        if getattr(role, "isolation", False):
+            return True  # worktree 文件隔离，互不干扰
+        disallowed = list(getattr(role, "disallowed_tools", []) or [])
+        # 只读角色（禁写文件，如 Explore）→ 安全
+        return "write_file" in disallowed and "edit_file" in disallowed
 
     def category(self) -> str:
         return "command"
