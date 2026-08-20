@@ -437,6 +437,45 @@ def test_defined_role_subagent_keeps_own_permission():
     assert sub.dont_ask is False
 
 
+def test_subagent_model_override_applied():
+    """子代理指定非 inherit 模型 → 其客户端 config.model 被覆盖。"""
+    from config.model import ProviderConfig
+    from core.agent.agent import Agent
+    from core.agent.config import AgentConfig
+    from core.agent.runtime import SessionRuntime
+    from conversation.manager import ConversationManager
+    from core.tool.context import ExecutionContext
+    from core.tool.tools.agent_tool import AgentTool
+
+    registry = _make_registry()
+    parent_client = ProviderConfig(
+        name="t", protocol="anthropic", model="parent-model", api_key="sk-x"
+    )
+    parent = Agent(
+        registry=registry,
+        llm_client=__import__("llm.client", fromlist=["LLMClient"]).LLMClient.create(
+            parent_client
+        ),
+        exec_ctx=ExecutionContext(cwd=Path.cwd(), session_id="main"),
+        conversation=ConversationManager(),
+        config=AgentConfig(max_iterations=5),
+        runtime=SessionRuntime(),
+    )
+    tool = AgentTool(catalog=load_catalog("."), task_mgr=None, bg_enabled=True)
+    tool.set_parent(parent)
+
+    allowed = [t.name() for t in registry.list()]
+    # 指定 haiku 模型
+    sub = tool._build_sub_agent(
+        None, allowed, "main", is_fork=False, model="haiku"
+    )
+    assert sub._client.config.model == "haiku"
+
+    # 不指定（inherit）→ 继承父模型
+    sub_inherit = tool._build_sub_agent(None, allowed, "main", is_fork=False, model="")
+    assert sub_inherit._client.config.model == "parent-model"
+
+
 # ── 回归：前台子 Agent 同步 await（对齐参考 mewcode，消除 sleep 轮询）──
 
 

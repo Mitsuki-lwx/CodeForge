@@ -303,6 +303,8 @@ class AgentTool(Tool):
         try:
             # 可读身份名：优先 Agent 工具的 name，其次角色名，兜底 'sub'（供 span 归属）
             sub_name = args.name or (getattr(role, "name", "") or "sub")
+            # 子代理模型：Agent 参数显式指定优先，其次角色声明，最后继承父
+            sub_model = args.model or getattr(role, "model", "") or "inherit"
             sub_agent = self._build_sub_agent(
                 role,
                 allowed,
@@ -310,6 +312,7 @@ class AgentTool(Tool):
                 wt_session,
                 is_fork=is_fork,
                 name=sub_name,
+                model=sub_model,
             )
         except Exception as e:
             logger.exception("Failed to build sub-agent")
@@ -413,6 +416,7 @@ class AgentTool(Tool):
         wt_session: object | None = None,
         is_fork: bool = False,
         name: str = "",
+        model: str = "",
     ) -> object:
         """构造子 Agent 实例。
 
@@ -421,6 +425,7 @@ class AgentTool(Tool):
             allowed: 过滤后的工具名列表。
             session_id: 父会话 ID。
             wt_session: 可选的 WorktreeSession；非空时子 Agent 工作在隔离目录。
+            model: 子 Agent 模型（'haiku'/'sonnet'/'opus'/'inherit'；空=继承父）。
         """
         from pathlib import Path
 
@@ -508,9 +513,28 @@ class AgentTool(Tool):
                     (system_prompt + "\n\n" + snapshot) if system_prompt else snapshot
                 )
 
+        # 子 Agent 客户端：默认继承父 client；若模型显式指定为非 'inherit'，
+        # 基于父 provider 配置克隆一份并覆盖 model，让子代理真正用指定模型跑。
+        parent_client = getattr(parent, "_client", None)
+        if (
+            model
+            and model.lower() not in ("inherit", "")
+            and parent_client is not None
+        ):
+            from config.model import ProviderConfig
+
+            parent_config = getattr(parent_client, "config", None)
+            if isinstance(parent_config, ProviderConfig):
+                try:
+                    from llm.client import LLMClient
+
+                    parent_client = LLMClient.create_with_model(parent_config, model)
+                except Exception:  # noqa: BLE001 —— 覆盖模型失败继承父即可，不阻断
+                    parent_client = getattr(parent, "_client", None)
+
         sub_agent = Agent(
             registry=sub_registry,
-            llm_client=getattr(parent, "_client", None),
+            llm_client=parent_client,
             exec_ctx=sub_exec_ctx,
             conversation=__import__(
                 "conversation.manager", fromlist=["ConversationManager"]
