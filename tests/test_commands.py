@@ -150,17 +150,26 @@ def test_register_builtins_all_registered():
     expected = [
         "clear",
         "compact",
+        "constraint",
         "do",
         "exit",
+        "goal",
         "help",
+        "hooks",
+        "mcp",
         "memory",
+        "model",
+        "observability",
         "permission",
         "plan",
         "resume",
         "session",
         "status",
+        "team",
+        "todo",
+        "worktree",
     ]
-    assert names == expected  # 字典序且 11 条（/review 改为 Skill 提供）
+    assert names == expected  # 字典序且 15 条（/review 改为 Skill 提供，/hooks /worktree /team /observability 新增）
 
 
 def test_register_builtins_no_collision():
@@ -396,3 +405,47 @@ async def test_dispatch_exit_raises_systemexit():
     app = _make_app()
     with pytest.raises(SystemExit):
         await app.dispatch_slash("/exit")
+
+
+# ── /mcp 查询命令 ──────────────────────────────────────────────────
+
+async def test_mcp_command_lists_servers():
+    from core.commands.builtin_mcp import handle_mcp
+
+    printed = []
+
+    class UI:
+        async def mcp_list(self):
+            return [
+                {"name": "filesystem", "tools": [
+                    {"name": "read_file", "description": "read a file"}]},
+            ]
+
+        def println(self, m):
+            printed.append(m)
+
+        def error(self, m):
+            raise AssertionError(m)
+
+    await handle_mcp(UI(), "")
+    assert any("filesystem" in m for m in printed)
+    assert any("read_file" in m for m in printed)
+
+
+async def test_mcp_command_no_servers():
+    from core.commands.builtin_mcp import handle_mcp
+
+    printed = []
+
+    class UI:
+        async def mcp_list(self):
+            return []
+
+        def println(self, m):
+            printed.append(m)
+
+        def error(self, m):
+            raise AssertionError(m)
+
+    await handle_mcp(UI(), "")
+    assert any("未配置" in m for m in printed)

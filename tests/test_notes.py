@@ -287,3 +287,42 @@ async def test_load_and_inject_memory(store):
     assembly = builder.build_assembly()
     stable = "\n".join(b.content for b in assembly.cached)
     assert "project_knowledge" in stable
+
+
+# ── upsert 确定性去重 ──────────────────────────────────────────────
+
+
+def test_upsert_new_note_creates(store):
+    p = store.upsert_note("user", "user_preference", "喜欢美式", "likes_am", "用户偏好美式咖啡")
+    assert p.exists()
+    assert (store._user_dir / "user_preference_likes_am.md") == p
+
+
+def test_upsert_same_slug_overwrites(store):
+    p1 = store.upsert_note("user", "user_preference", "喜欢美式", "likes_am", "v1 美式")
+    p2 = store.upsert_note("user", "user_preference", "喜欢美式", "likes_am", "v2 美式加奶")
+    assert p1 == p2  # 覆盖同一文件，不新建
+    assert "v2 美式加奶" in p1.read_text(encoding="utf-8")
+    assert len(store.list_notes("user")) == 1
+
+
+def test_upsert_same_title_different_slug_overwrites(store):
+    # LLM 判断不出、用了不同 slug，但 title 归一相同 → 转 update 覆盖
+    p1 = store.upsert_note("user", "user_preference", "喜欢美式", "a_1", "用户爱喝美式")
+    p2 = store.upsert_note("user", "user_preference", "喜欢 美式", "a_2", "用户爱喝美式")
+    assert p1 == p2  # 覆盖到同一条
+    assert len(store.list_notes("user")) == 1
+
+
+def test_upsert_same_body_head_overwrites(store):
+    # 内容 body 前 80 字符相同（同一事实不同表述/标题）→ 覆盖
+    p1 = store.upsert_note("user", "user_preference", "标题A", "s1", "这个项目用 Python 3.11 和 uv")
+    p2 = store.upsert_note("user", "user_preference", "标题B", "s2", "这个项目用 Python 3.11 和 uv 管理依赖")
+    assert p1 == p2
+    assert len(store.list_notes("user")) == 1
+
+
+def test_upsert_different_content_creates(store):
+    store.upsert_note("user", "user_preference", "喜欢美式", "am", "美式")
+    store.upsert_note("user", "user_preference", "喜欢拿铁", "latte", "拿铁")
+    assert len(store.list_notes("user")) == 2

@@ -50,6 +50,23 @@ def test_serialize_tool_message():
     assert "model" not in data  # 非首条不带 model
 
 
+def test_serialize_reasoning_roundtrip():
+    """reasoning（thinking 模式）在 serialize → reader 反序列化后保留。"""
+    from core.archive.reader import _deserialize
+    msg = Message(
+        role=MessageRole.ASSISTANT,
+        content="正文",
+        status=MessageStatus.COMPLETED,
+        reasoning="思考过程文本",
+    )
+    data = serialize_message(msg, model=None)
+    assert data["reasoning"] == "思考过程文本"
+    restored = _deserialize(data)
+    assert restored.role == MessageRole.ASSISTANT
+    assert restored.reasoning == "思考过程文本"
+    assert restored.content == "正文"
+
+
 # ── Writer ─────────────────────────────────────────────────────────
 
 
@@ -397,3 +414,10 @@ async def test_restore_compact_on_token_overrun(tmp_path, monkeypatch):
     )
     assert result.compacted is True
     assert "RESTORE_SUMMARY" in result.conversation.messages[0].content
+
+    # A2：压缩结果写回 JSONL —— 文件里应先有 compact 标记，且压缩后的摘要内容已落盘
+    # （修复前只压内存副本、不写回，JSONL 里不会出现摘要文本，下次恢复会从原文重压）。
+    jsonl_text = (d / CONVERSATION_FILENAME).read_text(encoding="utf-8")
+    data_lines = [json.loads(x) for x in jsonl_text.splitlines() if x.strip()]
+    assert any(x.get("type") == "compact" for x in data_lines)
+    assert "RESTORE_SUMMARY" in jsonl_text

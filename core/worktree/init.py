@@ -157,3 +157,12 @@ def _symlink_dependency(
         dst.symlink_to(src, target_is_directory=True)
     except OSError as e:
         raise WorktreeError(f"failed to symlink {dep}: {e}") from e
+
+    # 回读校验：部分环境（Windows 未开开发者模式、被安全策略拦截）下
+    # symlink_to 不抛错但链接并未创建——静默失败比报错更危险，调用方会
+    # 以为依赖目录已就位。此时按 best-effort 语义转成告警。
+    if not dst.is_symlink():
+        raise WorktreeError(
+            f"failed to symlink {dep}: 调用未报错但链接未创建"
+            "（Windows 需开发者模式或管理员权限）"
+        )

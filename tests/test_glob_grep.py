@@ -136,3 +136,46 @@ class TestGrep:
         assert grep_tool.is_destructive() is False
         assert grep_tool.is_concurrency_safe({}) is True
         assert grep_tool.category() == "code_search"
+
+
+class TestSkipDirs:
+    """SKIP_DIRS:遍历时跳过 .venv/.git/node_modules/__pycache__ 等重型目录。
+
+    对齐参考项目 mewcode tools/base.py 的 SKIP_DIRS 行为,防止目录递归把
+    .venv 这类几千文件的目录拉爆工具执行。
+    """
+
+    @pytest.mark.asyncio
+    async def test_glob_skips_venv(self, glob_tool, ctx, tmp_root):
+        (tmp_root / ".venv").mkdir(parents=True)
+        (tmp_root / ".venv" / "secret.py").write_text("x=1", encoding="utf-8")
+        (tmp_root / "main.py").write_text("x=1", encoding="utf-8")
+        result = await glob_tool.execute(ctx, {"pattern": "**/*.py"})
+        assert result.success is True
+        assert "secret.py" not in str(result.data)  # 被 SKIP_DIRS 滤掉
+        assert "main.py" in result.data
+
+    @pytest.mark.asyncio
+    async def test_grep_skips_venv(self, grep_tool, ctx, tmp_root):
+        (tmp_root / ".venv").mkdir(parents=True)
+        (tmp_root / ".venv" / "secret.py").write_text("needle", encoding="utf-8")
+        (tmp_root / "main.py").write_text("needle", encoding="utf-8")
+        result = await grep_tool.execute(ctx, {"pattern": "needle"})
+        assert result.success is True
+        assert ".venv" not in str(result.data)
+        assert "main.py" in result.data[0]["file"]
+
+    @pytest.mark.asyncio
+    async def test_glob_skips_git_and_node_modules(self, glob_tool, ctx, tmp_root):
+        for d in (".git", "node_modules", "__pycache__"):
+            (tmp_root / d).mkdir(parents=True)
+            (tmp_root / d / "ignored.py").write_text("x", encoding="utf-8")
+        (tmp_root / "keep.py").write_text("x", encoding="utf-8")
+        result = await glob_tool.execute(ctx, {"pattern": "**/*.py"})
+        assert "ignored.py" not in str(result.data)
+        assert "keep.py" in result.data
+
+    def test_skip_dirs_constant(self):
+        from core.tool.tools import SKIP_DIRS
+        for d in (".git", ".venv", "node_modules", "__pycache__"):
+            assert d in SKIP_DIRS

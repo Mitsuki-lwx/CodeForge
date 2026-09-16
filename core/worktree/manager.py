@@ -79,10 +79,19 @@ class WorktreeManager:
         wt_dir = self._worktrees_dir / name
 
         # 分支名从目录名派生（安全化：替换非法字符）
+        #
+        # 为什么前缀用连字符而不是 `worktree/`（2026-09-16 修）：git 2.55（Windows）
+        # 的 `git worktree add` **只要分支名含斜杠就报 `fatal: invalid reference: <分支名>`**
+        # ——新分支、已存在的斜杠分支都一样失败；`git branch a/b` 本身正常，说明只是
+        # worktree 子命令的解析问题。已用全新临时仓库最小复现（与本品无关）：
+        #   worktree add -b nb <path>            → OK
+        #   worktree add -b x/y <path>           → invalid reference
+        #   worktree add <path> a/b（分支已存在）→ invalid reference
+        # 因此分支名一律不含斜杠；`_safe_branch` 也已把 `/` 折成 `-`。
         if branch:
             wb = branch
         else:
-            wb = f"worktree/{_safe_branch(name)}"
+            wb = f"cf-wt-{_safe_branch(name)}"
 
         try:
             wt_dir.parent.mkdir(parents=True, exist_ok=True)

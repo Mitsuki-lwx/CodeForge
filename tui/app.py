@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,11 +20,17 @@ from rich.console import Console
 
 from config.loader import load_config
 from config.model import ProviderConfig
-from config.protocol_defaults import effective_context_window
 from conversation.manager import ConversationManager
-from core.agent import Agent, AgentConfig
+from core.agent import Agent
+from core.agent.bootstrap import (
+    CommandRegistrationError,
+    ReuseContext,
+    SessionBundle,
+    build_session,
+)
 from core.agent.events import (
     AgentError,
+    AgentEvent,
     AgentFinished,
     CompactEvent,
     CompactPhase,
@@ -34,29 +41,21 @@ from core.agent.events import (
     ToolCallFinished,
     ToolCallStarted,
 )
-from core.agent.role_loader import load_catalog
 from core.agent.runtime import SessionRuntime
-from core.archive import Writer, cleanup_expired
-from core.commands import Kind, Registry, parse_line, register_builtins
-from core.commands.skill_register import register_skills_as_commands
+from core.archive import (
+    Writer,
+    cleanup_expired,
+)
+from core.archive import (
+    make_on_replace as _make_on_replace,
+)
+from core.commands import Kind, parse_line
 from core.context_compression.state import new_session_context
-from core.hooks import HookContext, HookRunner, load_hooks_config
-from core.instructions import load_instructions
-from core.mcp import ConnectionPool, MCPToolAdapter, load_mcp_config
-from core.notes import NoteStore, build_memory_index_text
+from core.hooks import HookContext
+from core.mcp import ConnectionPool
 from core.permissions.hitl import HITLChoice
 from core.permissions.modes import PermissionMode
 from core.permissions.rules import extract_content
-from core.skills import SkillExecutor, SkillLoader
-from core.task.manager import BackgroundTaskManager
-from core.task.tools import SendMessageTool, TaskGetTool, TaskListTool, TaskStopTool
-from core.tool.context import ExecutionContext
-from core.tool.tools import get_default_registry
-from core.tool.tools.agent_tool import AgentTool
-from core.tool.tools.install_skill import InstallSkillTool
-from core.tool.tools.load_skill import LoadSkillTool
-from core.worktree.manager import WorktreeManager
-from llm.client import LLMClient
 from tui.completer import CommandCompleter
 from tui.hitl_dialog import show_hitl_dialog
 from tui.provider_select import select_provider
@@ -513,7 +512,12 @@ class CodeForgeApp:
         await _inject_and_run(self, text)
 
     async def resume_session(self, session_id: str) -> str:
-        """恢复指定会话，重建 Conversation/Writer/Agent（F22）。
+        """恢复指定会话：还原对话后走统一装配入口重建会话（F22）。
+
+        装配交给 `core/agent/bootstrap.build_session`——与新建会话同一条路径。
+        此前这里手搓一个裸 Agent（只有 `get_default_registry()`，不传 hooks、
+        不建会话状态、不注入 skill catalog、不设 loop），恢复出来的会话能力集
+        弱于新会话；现在两条路径共用装配，差异不再可能出现。
 
         Args:
             session_id: 会话 ID（YYYYMMDD-HHMMSS-xxxx）。
@@ -521,13 +525,7 @@ class CodeForgeApp:
         Returns:
             恢复提示文本，如「已恢复会话 <id>，共 <N> 条消息」。
         """
-        from core.agent import Agent, AgentConfig
-        from core.agent.runtime import SessionRuntime
         from core.archive import restore_session
-        from core.archive.writer import Writer
-        from core.context_compression.state import SessionContext
-        from core.tool.context import ExecutionContext
-        from core.tool.tools import get_default_registry
 
         session_dir = Path(self.workspace) / ".codeforge" / "sessions" / session_id
         result = await restore_session(
@@ -536,42 +534,63 @@ class CodeForgeApp:
             context_window=self.runtime.context_window,
         )
 
-        new_writer = Writer(session_dir, model=self.provider.model)
-        result.conversation.set_callbacks(
-            on_append=new_writer.append,
-            on_replace=_make_on_replace(new_writer),
-        )
+        # 旧会话的后台子 Agent 属于旧对话，切走前取消，避免结果注入到新会话
+        if self.task_mgr is not None:
+            try:
+                await self.task_mgr.cancel_all()
+            except Exception:  # noqa: BLE001 —— 取消失败不阻断恢复
+                pass
 
-        session_ctx = SessionContext(
-            session_id=session_id,
-            session_dir=str(session_dir),
-            spill_dir=str(session_dir / "tool-results"),
-        )
-        new_runtime = SessionRuntime(
-            session=session_ctx,
-            context_window=self.runtime.context_window,
-            notes=self.notes,
-        )
-
-        new_agent = Agent(
-            registry=get_default_registry(),
-            llm_client=LLMClient.create(self.provider),
-            exec_ctx=ExecutionContext(cwd=Path(self.workspace), session_id=session_id),
+        bundle = await build_session(
+            provider=self.provider,
+            workspace=self.workspace,
+            session_dir=session_dir,
             conversation=result.conversation,
-            config=AgentConfig(max_iterations=25),
-            runtime=new_runtime,
-            instructions=load_instructions(self.workspace),
-            memory=build_memory_index_text(self.notes),
+            # 复用长生命周期资源：换掉 task_mgr 会让后台通知消费协程失去订阅，
+            # 换掉 mcp_pool 会重新拉起 MCP 子进程并泄漏旧池（见 ReuseContext）
+            reuse=ReuseContext(
+                mcp_pool=self.mcp_pool,
+                task_mgr=self.task_mgr,
+                wt_manager=self.wt_manager,
+                notes=self.notes,
+            ),
         )
 
-        # 关闭旧 writer，切换引用（旧会话 JSONL 保留不删，F24）
+        # 旧 writer 关闭；旧会话 JSONL 保留不删（F24）
         if self.writer is not None:
             self.writer.close()
-        self.agent = new_agent
-        self.conversation = result.conversation
-        self.runtime = new_runtime
-        self.writer = new_writer
-        return f"已恢复会话 {session_id}，共 {len(result.conversation.messages)} 条消息"
+
+        # 整体切换：不能只换 agent/conversation，否则 app 里其余引用
+        # （cmd / skill / state / team / hooks）仍指向旧会话
+        self.agent = bundle.agent
+        self.conversation = bundle.conversation
+        self.runtime = bundle.runtime
+        self.writer = bundle.writer
+        self.cmd_registry = bundle.cmd_registry
+        self.skill_loader = bundle.skill_loader
+        self.skill_executor = bundle.skill_executor
+        self.task_mgr = bundle.task_mgr
+        self.subagent_catalog = bundle.subagent_catalog
+        self.wt_manager = bundle.wt_manager
+        self.team_mgr = bundle.team_mgr
+        self.state = bundle.state_store
+        self.notes = bundle.notes
+        self.hook_runner = bundle.hook_runner
+
+        for notice in bundle.notices:
+            self.println(notice)
+
+        # 补全器绑定的是旧命令注册中心；skill 变化会让两者内容不同，重绑一次。
+        # 无头占位 session 不支持该属性，忽略即可。
+        try:
+            self.session.completer = CommandCompleter(bundle.cmd_registry)
+        except Exception:  # noqa: BLE001 —— 占位 session 不支持补全器
+            pass
+
+        return (
+            f"已恢复会话 {session_id}，"
+            f"共 {len(bundle.conversation.messages)} 条消息"
+        )
 
 
 class _HeadlessSessionStub:
@@ -1001,35 +1020,6 @@ def run(task: str = "", loop: str = "") -> None:
         print("\nBye!")
 
 
-def _make_on_replace(writer):
-    """压缩整体替换时：先写 compact 标记再逐条追加新消息（F12/F44）。"""
-
-    def _replace(msgs):
-        writer.append_compact_marker()
-        for m in msgs:
-            writer.append(m)
-
-    return _replace
-
-
-def _build_skill_catalog_text(loader) -> str:
-    """构建 Skill catalog 文本（第一阶段：名字 + 描述列表）。"""
-    skills = loader.list_all()
-    if not skills:
-        return ""
-    lines = [
-        "## Available Skills",
-        "",
-        "You have access to the following Skills. When a user request matches "
-        "a Skill's description, call the `LoadSkill` tool with the skill name "
-        "to activate it and receive the full SOP.",
-        "",
-    ]
-    for s in skills:
-        lines.append(f"- **{s.meta.name}**: {s.meta.description}")
-    return "\n".join(lines)
-
-
 async def _run_async(provider, task: str = "", providers=None, loop: str = "") -> None:
     console = Console()
     workspace = Path.cwd()
@@ -1048,294 +1038,37 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
                     f"/resume 可恢复[/]"
                 )
         except Exception:  # noqa: BLE001 —— 提示失败不阻断启动
-            return
-
-    # 项目指令 + 记忆索引（启动时加载一次，F45）
-    instructions = load_instructions(str(workspace))
-    notes = NoteStore(workspace)
-    memory_text = build_memory_index_text(notes)
+            pass
 
     # 后台会话清理，不阻塞启动（F26）
     cleanup_task = asyncio.create_task(
         asyncio.to_thread(cleanup_expired, str(workspace))
     )
 
-    # 命令注册中心（启动期冲突即 panic 退出，N1）
-    try:
-        cmd_reg = Registry()
-        register_builtins(cmd_reg)
-    except Exception as e:
-        print(f"命令注册冲突，启动终止: {e}")
-        sys.exit(1)
-
-    mcp_pool = ConnectionPool()
-    writer: Writer | None = None
-    agent: Agent | None = None
+    bundle: SessionBundle | None = None
     app: CodeForgeApp | None = None
+    _task_done_consumer: asyncio.Task | None = None
 
     try:
-        # ── 初始化 Agent ──
-        client = LLMClient.create(provider)
-        registry = get_default_registry()
-        exec_ctx = ExecutionContext(cwd=workspace, session_id="main")
-        config = AgentConfig(max_iterations=25)
-
-        # ── Hook 系统初始化（两级 YAML 加载，错误不阻断启动）──
-        hook_rules, hook_problems, hook_sources = load_hooks_config(workspace)
-        hook_runner = HookRunner(
-            rules=hook_rules,
-            cwd=workspace,
-            sources=hook_sources,
-            session_id="main",
-        )
-        if hook_problems:
-            console.print(f"[dim]Hook: {'; '.join(hook_problems)}[/]")
-
-        # 会话级上下文压缩运行时（跨轮复用，Agent 不再每轮重建）
-        runtime = SessionRuntime(
-            session=new_session_context(str(workspace)),
-            context_window=effective_context_window(
-                provider.protocol, provider.context_window
-            ),
-            notes=notes,
-            hook_runner=hook_runner,
-        )
-
-        # 会话存档：JSONL 追加 + 压缩标记通过 Conversation 回调驱动
-        writer = Writer(runtime.session.session_dir, model=provider.model)
-        conversation = ConversationManager(
-            system_prompt="",
-            on_append=writer.append,
-            on_replace=_make_on_replace(writer),
-        )
-
-        agent = Agent(
-            registry=registry,
-            llm_client=client,
-            exec_ctx=exec_ctx,
-            conversation=conversation,
-            config=config,
-            runtime=runtime,
-            instructions=instructions,
-            memory=memory_text,
-            hooks=hook_runner,
-        )
-
-        # 无头单任务模式：自动放行 ask 级工具（Agent/bash/write），
-        # 否则多智能体 spawn 的 Agent 工具会触发 HITL 审批而在无人环境挂死。
-        # 仅影响 --task 分支；交互式行为不变。
-        if task:
-            agent._dont_ask = True
-
-        # Inject ExitPlanMode tool callbacks
+        # ── 唯一装配入口：新建与恢复走同一条路径（core/agent/bootstrap.py）──
+        # client / registry / hooks / runtime / writer / agent / skills /
+        # 会话状态 / team / loop / coordinator / ExitPlanMode 回调 / MCP
+        # 全部收敛在 build_session 内，避免两条路径的能力集分叉。
         try:
-            from core.tool.tools.exit_plan_mode import ExitPlanModeTool
-
-            epm = registry.get("ExitPlanMode")
-            if isinstance(epm, ExitPlanModeTool):
-                epm._is_plan_mode = lambda: agent.plan_mode
-                epm._plan_exists = lambda: bool(
-                    agent._plan_path and agent._plan_path.exists()
-                )
-        except Exception:
-            pass
-
-        # ── Skill 系统初始化 ──
-        skill_loader = SkillLoader(str(workspace))
-        skill_loader.load_all()
-
-        # LoadSkill 工具（系统工具，不受白名单约束）
-        load_skill_tool = LoadSkillTool()
-        load_skill_tool.set_loader(skill_loader)
-        load_skill_tool.set_agent(agent)
-        registry.register(load_skill_tool)
-
-        # InstallSkill 工具（远程安装）
-        install_skill_tool = InstallSkillTool(
-            catalog=skill_loader, work_dir=str(workspace)
-        )
-        registry.register(install_skill_tool)
-
-        # 校验 Skill 白名单工具存在性（fail-fast）
-        removed = skill_loader.validate_tools(registry)
-        if removed:
-            console.print(
-                f"[dim]Skill: {len(removed)} skill(s) removed due to missing tools: {', '.join(removed)}[/]"
+            bundle = await build_session(
+                provider=provider,
+                workspace=workspace,
+                loop_spec=loop,
+                headless=bool(task),
             )
+        except CommandRegistrationError as e:
+            print(f"命令注册冲突，启动终止: {e}")
+            sys.exit(1)
 
-        # ── SubAgent 系统初始化 ──
-        subagent_catalog = load_catalog(str(workspace))
-        task_mgr = BackgroundTaskManager()
-        wt_manager = WorktreeManager(str(workspace))
-
-        # 4 个后台任务管理工具
-        registry.register(TaskListTool(task_mgr))
-        registry.register(TaskGetTool(task_mgr))
-        registry.register(TaskStopTool(task_mgr))
-        registry.register(SendMessageTool(task_mgr))
-
-        # Agent 工具（parent 暂为 None，MewCodeApp 构造后回填）
-        agent_tool = AgentTool(
-            catalog=subagent_catalog,
-            task_mgr=task_mgr,
-            parent_agent=None,
-            bg_enabled=True,
-            wt_manager=wt_manager,
-        )
-        registry.register(agent_tool)
-
-        # ── 会话状态系统（spec_session_state）：store + 工具 + 注入 ──
-        from core.notes.state import SessionStateStore
-        from core.tool.tools.state_tool import register_state_tools
-
-        state_store = SessionStateStore(
-            runtime.session.session_dir, notes=notes
-        )
-        register_state_tools(registry, state_store)
-        agent.set_state_store(state_store)
-
-        # ── Team 系统初始化 ──
-        team_features = None
-        try:
-            from config.loader import load_config_full
-
-            _, team_features = load_config_full("config.yaml")
-        except Exception as e:  # noqa: BLE001 —— features 解析失败不阻断启动
-            print(f"[team] features 解析失败: {e}", file=sys.stderr)
-
-        # ── Agent 循环策略（spec_loop）：CLI --loop 优先，否则 config loop: ──
-        _loop_spec = loop or (
-            getattr(team_features, "loop", "") if team_features else ""
-        )
-        if _loop_spec:
-            from core.agent.loop import load_loop
-
-            agent.set_loop(load_loop(_loop_spec, agent))
-
-        from core.team.manager import Manager as TeamManager
-        from core.team.registry import AgentNameRegistry
-        from core.team.tools import (
-            SendMessageTool as TeamSendMessageTool,
-        )
-        from core.team.tools import (
-            TaskCreateTool,
-            TaskUpdateTool,
-        )
-        from core.team.tools import (
-            TaskGetTool as TeamTaskGetTool,
-        )
-        from core.team.tools import (
-            TaskListTool as TeamTaskListTool,
-        )
-
-        name_reg = AgentNameRegistry()
-        task_mgr.set_name_registry(name_reg)
-        team_mgr = TeamManager(
-            home_dir=str(Path.home()),
-            wt_mgr=wt_manager,
-            task_mgr=task_mgr,
-            reg=name_reg,
-        )
-
-        # 5 个团队协作工具注册进全局 registry（未绑定 team → 运行时解析 active_team）
-        registry.register(TaskCreateTool(team_mgr, ""))
-        registry.register(TeamTaskGetTool(team_mgr, ""))
-        registry.register(TeamTaskListTool(team_mgr, ""))
-        registry.register(TaskUpdateTool(team_mgr, ""))
-        registry.register(TeamSendMessageTool(team_mgr, "", "", ""))
-
-        # Agent 工具委托 team 派生 + 队员空闲通知
-        agent_tool.set_team_hook(team_mgr)
-        task_mgr.on_task_done(lambda tid: team_mgr.handle_task_done(tid))
-
-        # Coordinator Mode：双锁开关生效时收窄 Lead 工具集 + 注入纪律提示词
-        from core.coordinator import (
-            allowed_tools as coordinator_allowed_tools,
-        )
-        from core.coordinator import (
-            is_enabled as coordinator_enabled,
-        )
-        from core.coordinator import (
-            system_prompt_suffix as coordinator_prompt,
-        )
-
-        if team_features is not None and coordinator_enabled(team_features):
-            agent.set_allowed_tools(coordinator_allowed_tools())
-            agent.append_system_prompt(coordinator_prompt())
-            console.print(
-                "[dim]Coordinator Mode 已启用（write_file/edit_file 已从工具集移除）[/]"
-            )
-
-        # Skill 执行器
-        skill_executor = SkillExecutor(
-            catalog=skill_loader,
-            runtime=runtime,
-            registry=registry,
-            provider=provider,
-            workspace=str(workspace),
-        )
-        skill_executor.set_agent(agent)
-
-        # Skill Catalog 注入（第一阶段：名字 + 描述）
-        agent.set_skill_catalog(_build_skill_catalog_text(skill_loader))
-
-        # Skill → 斜杠命令自动注册
-        register_skills_as_commands(cmd_reg, skill_loader, skill_executor)
-
-        # InstallSkill 安装后回调 → 重新注册命令
-        install_skill_tool.set_on_installed(
-            lambda _: register_skills_as_commands(cmd_reg, skill_loader, skill_executor)
-        )
-
-        # 注册 /skill 管理命令（需要注入 SkillLoader 和 SkillExecutor）
-        from functools import partial
-
-        from core.commands.builtin_skill import handle_skill
-        from core.commands.types import Command
-        from core.commands.types import Kind as CmdKind
-
-        cmd_reg.register(
-            Command(
-                name="skill",
-                description="管理 Skill（list / info / reload）",
-                kind=CmdKind.LOCAL,
-                handler=partial(
-                    handle_skill,
-                    catalog=skill_loader,
-                    executor=skill_executor,
-                ),
-            )
-        )
+        for _notice in bundle.notices:
+            console.print(f"[dim]{_notice}[/]")
 
         _print_banner(console, provider.name, provider.model)
-
-        # ── 加载 MCP 外部工具 ──
-        mcp_count = 0
-        mcp_tool_count = 0
-        mcp_configs = load_mcp_config()
-        if mcp_configs:
-            mcp_pool.configure(mcp_configs)
-            for cfg in mcp_configs:
-                try:
-                    name = cfg["name"]
-                    mclient = await mcp_pool.get_client(name)
-                    if mclient:
-                        tools = await mclient.list_tools()
-                        for td in tools:
-                            adapter = MCPToolAdapter(mclient, td, name)
-                            registry.register(adapter)
-                            mcp_tool_count += 1
-                        mcp_count += 1
-                        console.print(
-                            f"[dim]MCP: {name} → {len(tools)} tools loaded[/]"
-                        )
-                except Exception:
-                    pass
-            if mcp_count > 0:
-                console.print(
-                    f"[dim]MCP: {mcp_count} servers, {mcp_tool_count} tools total[/]"
-                )
-                console.print()
 
         # ── 输入历史 + 命令补全 ──
         # 无头单任务模式不进入交互循环：跳过 PromptSession（GUI-less shell 会因
@@ -1346,47 +1079,41 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
         else:
             session = PromptSession(
                 history=history,
-                completer=CommandCompleter(cmd_reg),
+                completer=CommandCompleter(bundle.cmd_registry),
                 complete_while_typing=True,
                 key_bindings=_command_key_bindings(),
             )
 
         app = CodeForgeApp(
             console=console,
-            agent=agent,
+            agent=bundle.agent,
             session=session,
-            conversation=conversation,
-            runtime=runtime,
+            conversation=bundle.conversation,
+            runtime=bundle.runtime,
             provider=provider,
-            mcp_pool=mcp_pool,
+            mcp_pool=bundle.mcp_pool,
             workspace=str(workspace),
-            notes=notes,
-            writer=writer,
-            cmd_registry=cmd_reg,
-            skill_loader=skill_loader,
-            skill_executor=skill_executor,
-            task_mgr=task_mgr,
-            subagent_catalog=subagent_catalog,
-            wt_manager=wt_manager,
-            team_mgr=team_mgr,
-            state=state_store,
+            notes=bundle.notes,
+            writer=bundle.writer,
+            cmd_registry=bundle.cmd_registry,
+            skill_loader=bundle.skill_loader,
+            skill_executor=bundle.skill_executor,
+            task_mgr=bundle.task_mgr,
+            subagent_catalog=bundle.subagent_catalog,
+            wt_manager=bundle.wt_manager,
+            team_mgr=bundle.team_mgr,
+            state=bundle.state_store,
             provider_list=providers or [],
         )
-        app.hook_runner = hook_runner
-
-        # Agent 工具回填父 Agent 引用
-        agent_tool.set_parent(agent)
-
-        # ── Worktree 启动恢复：检测未退出的会话 ──
-        recovered = wt_manager.recover_all()
-        if recovered:
-            console.print(f"[dim]Worktree: 恢复 {len(recovered)} 个未退出的隔离会话[/]")
+        app.hook_runner = bundle.hook_runner
 
         # 启动 task notification 消费协程
         _task_done_consumer = asyncio.create_task(_consume_task_done(app))
 
         # ── Hook: 会话启动（首条用户消息进入对话前）──
-        await hook_runner.run("session_start", app._hook_payload("session_start"))
+        await bundle.hook_runner.run(
+            "session_start", app._hook_payload("session_start")
+        )
 
         # ── 单任务(无头)模式：跑一次后由 finally 走清理退出 ──
         if task:
@@ -1404,7 +1131,9 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
             resolve_router as _resolve_router,
         )
 
-        _router_cfg = getattr(team_features, "router", None) if team_features else None
+        _router_cfg = (
+            getattr(bundle.team_features, "router", None) if bundle.team_features else None
+        )
         app.router_cfg = _router_cfg  # 暴露给 /model：切到 cheap 时提示路由停用
         _router_enabled = bool(_router_cfg and _router_cfg.enabled)
         _router_prompt = getattr(_router_cfg, "judge_prompt", "") if _router_cfg else ""
@@ -1497,7 +1226,7 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
 
     finally:
         # ── 停止 task notification 消费 ──
-        if "_task_done_consumer" in dir() and not _task_done_consumer.done():
+        if _task_done_consumer is not None and not _task_done_consumer.done():
             _task_done_consumer.cancel()
         # ── 取消所有后台子 Agent ──
         cur_task_mgr = app.task_mgr if app is not None else None
@@ -1522,18 +1251,24 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
             except Exception:  # noqa: BLE001, S110 —— hook 失败不影响退出
                 pass
         # 等待后台记忆任务 + 关闭存档 + 清理
-        cur_agent = app.agent if app is not None else agent
-        cur_writer = app.writer if app is not None else writer
+        # app 未构造时（装配中途失败）退回 bundle 的产物，保证句柄不泄漏
+        cur_agent = app.agent if app is not None else (
+            bundle.agent if bundle is not None else None
+        )
+        cur_writer = app.writer if app is not None else (
+            bundle.writer if bundle is not None else None
+        )
         if cur_agent is not None:
             await cur_agent.shutdown_memory(timeout=3.0)
         if cur_writer is not None:
             cur_writer.close()
         if not cleanup_task.done():
             cleanup_task.cancel()
-        try:
-            await mcp_pool.close_all()
-        except Exception:
-            pass
+        if bundle is not None:
+            try:
+                await bundle.mcp_pool.close_all()
+            except Exception:  # noqa: BLE001, S110 —— 关闭失败不影响退出
+                pass
 
 
 async def _wait_background_tasks(

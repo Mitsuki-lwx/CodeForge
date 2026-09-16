@@ -115,13 +115,15 @@ class TestOpenAIClient:
         assert body["messages"][0]["content"] == "You are helpful."
 
     def test_custom_base_url(self):
-        """自定义 base_url 生效。"""
+        """自定义 base_url 生效（经 Session→Adapter 拼接请求端点）。"""
         cfg = ProviderConfig(
             name="t", protocol="openai", model="gpt-4", api_key="k",
             base_url="https://custom.example.com/v1",
         )
         client = OpenAIClient(cfg)
-        assert "custom.example.com" in client._base_url
+        assert "custom.example.com" in client._session.adapter.build_url(
+            client._session.adapter.build_base_url()
+        )
 
     def test_api_error(self):
         """HTTP 401 错误。"""
@@ -138,7 +140,7 @@ class TestOpenAIClient:
 
     def test_reasoning_content_as_thinking(self, monkeypatch):
         """OpenAI 协议的 reasoning_content 产出 ThinkingChunk，与正文区分。"""
-        import llm.openai_client as mod
+        import llm.transport as transport_mod
 
         lines = [
             'data: {"choices": [{"delta": {"role": "assistant", "reasoning_content": "Let me reason"}, "index": 0}]}',
@@ -150,7 +152,7 @@ class TestOpenAIClient:
             name="t", protocol="openai", model="c", api_key="sk-x", thinking=True,
         )
         client = OpenAIClient(cfg)
-        monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _FakeClientCM(lines))
+        monkeypatch.setattr(transport_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClientCM(lines))
 
         async def collect():
             events = []
@@ -190,3 +192,134 @@ def test_normalize_usage_empty():
     from llm.openai_client import _normalize_usage
 
     assert _normalize_usage(None) is None
+
+
+# ── 出站 wire format：Anthropic 内容块 → OpenAI tool_calls / role="tool" ──
+
+
+def _wire(m):
+    """返回 list[dict]，单个内部消息可能展开成多条 wire 消息。"""
+    from llm.openai_client import _to_openai_wire
+    return _to_openai_wire(m)
+
+
+def test_wire_text_message():
+    """纯文本消息 → 内容块数组。"""
+    from conversation.message import APIMessage
+    out = _wire(APIMessage(role="assistant", content="hello"))
+    assert len(out) == 1
+    assert out[0]["role"] == "assistant"
+    assert out[0]["content"] == [{"type": "text", "text": "hello"}]
+
+
+def test_wire_user_text_message():
+    """user 纯文本也转成块数组（避免 endpoint 期待 block 却见裸字符串）。"""
+    from conversation.message import APIMessage
+    out = _wire(APIMessage(role="user", content="hi"))
+    assert out[0]["content"] == [{"type": "text", "text": "hi"}]
+
+
+def test_wire_assistant_tool_use():
+    """assistant 的 tool_use 块 → 顶级 tool_calls, arguments 为 JSON 字符串。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(role="assistant", content=[
+        {"type": "text", "text": "先查一下"},
+        {"type": "tool_use", "id": "call_1", "name": "read_file", "input": {"path": "/a.txt"}},
+    ])
+    out = _wire(msg)
+    assert len(out) == 1
+    e = out[0]
+    assert e["role"] == "assistant"
+    assert e["content"] == [{"type": "text", "text": "先查一下"}]
+    assert e["tool_calls"] == [{
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "read_file", "arguments": '{"path": "/a.txt"}'},
+    }]
+
+
+def test_wire_assistant_only_tool_use_empty_content():
+    """只有 tool_use、无文本时 content 为空数组。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(role="assistant", content=[
+        {"type": "tool_use", "id": "c", "name": "grep_tool", "input": {"q": "x"}},
+    ])
+    out = _wire(msg)
+    e = out[0]
+    assert e["role"] == "assistant"
+    assert e["content"] == []
+    assert e["tool_calls"][0]["function"]["name"] == "grep_tool"
+
+
+def test_wire_tool_result_becomes_tool_role():
+    """user 的 tool_result 块 → role="tool" + tool_call_id。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(role="user", content=[
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "文件内容……"},
+    ])
+    out = _wire(msg)
+    assert out == [{"role": "tool", "tool_call_id": "call_1", "content": "文件内容……"}]
+
+
+def test_wire_multiple_tool_results_expand_each_as_tool():
+    """一个含多个 tool_result 块的消息 → 每块一条 role='tool' 消息（多工具调用时必需）。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(role="user", content=[
+        {"type": "tool_result", "tool_use_id": "call_00", "content": "A目录列表"},
+        {"type": "tool_result", "tool_use_id": "call_01", "content": "B文件列表"},
+    ])
+    out = _wire(msg)
+    assert out == [
+        {"role": "tool", "tool_call_id": "call_00", "content": "A目录列表"},
+        {"role": "tool", "tool_call_id": "call_01", "content": "B文件列表"},
+    ]
+
+
+def test_wire_bytes_tool_result():
+    """tool_result 内容为 bytes 时解码为文本。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(role="user", content=[
+        {"type": "tool_result", "tool_use_id": "call_9", "content": b"raw\xff"},
+    ])
+    out = _wire(msg)
+    assert out[0]["content"] == "raw�"
+
+
+def test_wire_plain_assistant_reasoning_top_level():
+    """assistant 文本消息的 reasoning → 顶层 reasoning_content。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(role="assistant", content="查一下结构", reasoning="先看目录再分析")
+    out = _wire(msg)
+    e = out[0]
+    assert e["role"] == "assistant"
+    assert e["content"] == [{"type": "text", "text": "查一下结构"}]
+    assert e["reasoning_content"] == "先看目录再分析"
+
+
+def test_wire_tool_use_message_carries_reasoning():
+    """assistant 工具调用消息必须带上 reasoning_content（DeepSeek thinking 模式必需）。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(
+        role="assistant",
+        content=[
+            {"type": "tool_use", "id": "call_1", "name": "glob_tool", "input": {"pattern": "**/*.py"}},
+        ],
+        reasoning="我先 Glob 一下文件列表",
+    )
+    out = _wire(msg)
+    e = out[0]
+    assert e["reasoning_content"] == "我先 Glob 一下文件列表"
+    assert e["tool_calls"][0]["function"]["name"] == "glob_tool"
+
+
+def test_wire_tool_result_never_receives_reasoning_field():
+    """tool result 消息不应带上 assistant 的 reasoning。"""
+    from conversation.message import APIMessage
+    msg = APIMessage(
+        role="user",
+        content=[{"type": "tool_result", "tool_use_id": "call_1", "content": "xx"}],
+        reasoning="不应出现",
+    )
+    out = _wire(msg)
+    assert out[0]["role"] == "tool"
+    assert "reasoning_content" not in out[0]

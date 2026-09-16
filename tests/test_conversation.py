@@ -116,6 +116,16 @@ class TestConversationManager:
         assert s.status == MessageStatus.ERROR
         assert s.content == "API error"
 
+    def test_fail_stream_clears_reasoning(self):
+        """出错后 reasoning 残留应清空，避免 thinking 模式回传污染请求。"""
+        cm = ConversationManager()
+        cm.add_user_message("Hello")
+        s = cm.start_assistant_stream()
+        cm.append_reasoning(s, "先看目录，再读文件。")
+        assert s.reasoning != ""
+        cm.fail_stream(s, "API error")
+        assert s.reasoning == ""
+
     def test_to_api_format(self):
         cm = ConversationManager("You are helpful.")
         cm.add_user_message("Hi")
@@ -146,3 +156,45 @@ class TestConversationManager:
         cm.reset()
         assert cm.messages == []
         assert cm.system_prompt == "sys"
+
+    def test_reasoning_accumulated_on_stream_message(self):
+        """思考文本累积到 streaming assistant 消息的 reasoning 字段。"""
+        cm = ConversationManager()
+        cm.add_user_message("查架构")
+        s = cm.start_assistant_stream()
+        cm.append_reasoning(s, "先列出目录，")
+        cm.append_reasoning(s, "再看关键文件。")
+        assert s.reasoning == "先列出目录，再看关键文件。"
+        assert s.content == ""
+
+    def test_to_api_format_carries_reasoning(self):
+        """普通 assistant 消息的 reasoning 透传到 APIMessage。"""
+        cm = ConversationManager()
+        cm.add_user_message("查架构")
+        s = cm.start_assistant_stream()
+        cm.append_reasoning(s, "thinking...")
+        cm.append_to_stream(s, "正文")
+        cm.finish_stream(s)
+        api_msgs, _ = cm.to_api_format()
+        for m in api_msgs:
+            if m.role == "assistant":
+                assert m.reasoning == "thinking..."
+                assert m.content == "正文"
+
+    def test_tool_use_message_keeps_reasoning_through_to_api(self):
+        """assistant 工具调用消息合并后仍携带 reasoning → APIMessage。"""
+        cm = ConversationManager()
+        cm.add_user_message("列文件")
+        s = cm.start_assistant_stream()
+        cm.append_reasoning(s, "需要先 Glob")
+        cm.finish_stream(s)
+        # 相邻 assistant 消息：纯推理(无正文) + tool_use
+        tu = cm.add_tool_use("call_1", "glob_tool", {"pattern": "**/*.py"})
+        api_msgs, _ = cm.to_api_format()
+        asst = [m for m in api_msgs if m.role == "assistant"]
+        assert len(asst) == 1
+        # 合并成一条 assistant：tool_use 块 + 保留下来的 reasoning（供 thinking mode 回传）
+        types = [b.get("type") for b in asst[0].content]
+        assert types == ["tool_use"]
+        assert asst[0].reasoning == "需要先 Glob"
+        assert tu.tool_name == "glob_tool"

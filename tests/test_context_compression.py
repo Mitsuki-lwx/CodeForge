@@ -335,6 +335,53 @@ def test_offload_and_snip_single_over_limit(tmp_path):
     assert state._seen_ids == {"tid1"}
 
 
+def test_offload_and_snip_flat_shape_spills(tmp_path):
+    """扁平形态（生产真实形态）：role=user + tool_use_id 非空 + content 为 str。
+
+    回归：`ConversationManager.add_tool_result` 存的是扁平字段（content=str +
+    tool_use_id），而非 content 块列表。此前 offload_and_snip 只认 block 形态，
+    导致大工具结果从不落盘。
+    """
+    ctx = make_session(tmp_path)
+    big = "A" * (SINGLE_RESULT_LIMIT + 1)
+    msgs = [
+        Message(
+            role=MessageRole.USER,
+            content=big,
+            status=MessageStatus.COMPLETED,
+            tool_use_id="tid-flat",
+        )
+    ]
+    state = ContentReplacementState()
+    out = offload_and_snip(msgs, state, ctx)
+
+    m = out[0]
+    assert isinstance(m.content, str)  # 仍是 str
+    assert m.tool_use_id == "tid-flat"  # tool_use_id 保留
+    assert "original size:" in m.content  # 已替换为预览
+    assert len(m.content) < len(big)  # 预览远小于原文
+    assert (Path(ctx.spill_dir) / "tid-flat").exists()
+    assert state._seen_ids == {"tid-flat"}
+
+
+def test_offload_and_snip_flat_shape_idempotent(tmp_path):
+    """扁平形态幂等：同 tool_use_id 二次调用复用存量决策，不重复落盘。"""
+    ctx = make_session(tmp_path)
+    big = "A" * (SINGLE_RESULT_LIMIT + 1)
+    msgs = [
+        Message(
+            role=MessageRole.USER,
+            content=big,
+            status=MessageStatus.COMPLETED,
+            tool_use_id="tid-flat",
+        )
+    ]
+    state = ContentReplacementState()
+    out1 = offload_and_snip(msgs, state, ctx)
+    out2 = offload_and_snip(msgs, state, ctx)
+    assert out1[0].content == out2[0].content
+
+
 def test_preview_has_stable_markers(tmp_path):
     ctx = make_session(tmp_path)
     big = "A" * (SINGLE_RESULT_LIMIT + 1)

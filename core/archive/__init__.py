@@ -6,9 +6,19 @@ JSONL 追加写入、会话列表扫描、恢复与清理。
 from __future__ import annotations
 
 from core.archive.cleanup import CLEANUP_DAYS, cleanup_expired
-from core.archive.reader import RECOVERY_STALE_HOURS, RestoreResult, restore_session
+from core.archive.reader import (
+    RECOVERY_STALE_HOURS,
+    RestoreResult,
+    read_messages,
+    restore_session,
+)
 from core.archive.session_list import SessionItem, list_sessions
-from core.archive.writer import CONVERSATION_FILENAME, Writer, serialize_message
+from core.archive.writer import (
+    CONVERSATION_FILENAME,
+    Writer,
+    make_on_replace,
+    serialize_message,
+)
 
 __all__ = [
     "CLEANUP_DAYS",
@@ -19,6 +29,8 @@ __all__ = [
     "Writer",
     "cleanup_expired",
     "list_sessions",
+    "make_on_replace",
+    "read_messages",
     "restore_session",
     "serialize_message",
 ]

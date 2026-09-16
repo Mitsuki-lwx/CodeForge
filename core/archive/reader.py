@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from conversation.manager import ConversationManager
@@ -39,6 +39,10 @@ class RestoreResult:
     skipped: int = 0  # 跳过的坏行数
     compacted: bool = False  # 是否触发过压缩
     time_gap_seconds: float = 0.0  # 距上次活跃时长
+    # 发起但从未落盘结果的工具调用（截断掉的那些）。
+    # 恢复逻辑据此交叉副作用 journal 判断「哪些调用可能已经生效」（见
+    # core/host/recovery.py）——截断本身不再静默丢信息。
+    unpaired_tool_uses: list[Message] = field(default_factory=list)
 
 
 def _deserialize(data: dict) -> Message:
@@ -64,8 +68,12 @@ def _deserialize(data: dict) -> Message:
     )
 
 
-def _read_messages(jsonl: Path) -> tuple[list[Message], int, float]:
-    """逐行解析；坏行跳过；从最后一个 compact 标记之后开始累积。"""
+def read_messages(jsonl: Path) -> tuple[list[Message], int, float]:
+    """逐行解析；坏行跳过；从最后一个 compact 标记之后开始累积。
+
+    公开而非私有：`codeforge attach` 要读一个**不是当前活跃 run** 的会话，
+    那条路径上只有磁盘上的 JSONL，没有内存里的 ConversationManager。
+    """
     msgs: list[Message] = []
     skipped = 0
     last_ts = 0.0
@@ -96,21 +104,56 @@ def _read_messages(jsonl: Path) -> tuple[list[Message], int, float]:
     return msgs, skipped, last_ts
 
 
+def _is_tool_use_msg(m: Message) -> bool:
+    """是否是「assistant 发起工具调用」的消息。"""
+    return bool(
+        m.role == MessageRole.ASSISTANT and m.tool_name and m.tool_use_id
+    )
+
+
+def _unpaired_tool_use_indices(msgs: list[Message]) -> list[int]:
+    """返回「发起了 tool_use 但没有配对结果」的消息下标（升序）。
+
+    正常收尾的会话里这个列表必然为空：`Agent` 在每轮结束前会给**每一个**
+    tool_use 都补上结果（包括被 deny 和用户拒绝的），所以「未配对」只可能来自
+    进程在工具批次中途死掉。
+
+    注意与 `core/agent/fork.py::build_forked` 的区别：那边只反向扫描**尾部**连续
+    的 tool_use（fork 只会发生在尾部，且必须跳过历史遗留条目，否则会给旧调用
+    补一堆占位结果）。恢复要的是全量语义——宁可多问一句，不能漏掉一个副作用。
+    """
+    result_ids = {
+        m.tool_use_id for m in msgs if m.role == MessageRole.USER and m.tool_use_id
+    }
+    return [
+        i
+        for i, m in enumerate(msgs)
+        if _is_tool_use_msg(m) and m.tool_use_id not in result_ids
+    ]
+
+
 def _truncate_dangling_tool_use(msgs: list[Message]) -> list[Message]:
-    """末尾 assistant 工具调用无配对结果时，截断到该条之前。"""
-    if not msgs:
+    """把「未配对的工具调用」所在的那一整批调用连同其后内容截掉。
+
+    策略不变（截断而非重放、不伪造结果），但截断点必须退到**整批 tool_use 的起点**。
+
+    落盘顺序是「先所有 tool_use，再所有 tool_result」（`Agent` 在每轮结束前统一
+    回灌），所以批次中途崩溃会留下 `[A(t1), A(t2), U(r1)]` 这种半截形状。此时：
+
+    - 截到「最后一个带 tool_use 的消息」（原实现）→ `[A(t1)]`，A(t1) 仍无结果；
+    - 截到「第一个未配对消息」（A(t2)）→ `[A(t1)]`，同样留下无结果的 A(t1)；
+    - 截到**批次起点**（A(t1) 之前）→ `[]`，干净。
+
+    前两种都会让恢复出来的对话以「assistant 发起 tool_call 却没有对应 tool 结果」
+    结尾——模型 API 会直接判为非法请求，恢复出来的会话第一轮就 400。
+    """
+    bad = _unpaired_tool_use_indices(msgs)
+    if not bad:
         return msgs
-    for i in range(len(msgs) - 1, -1, -1):
-        m = msgs[i]
-        if m.role == MessageRole.ASSISTANT and m.tool_name and m.tool_use_id:
-            has_result = any(
-                mm.role == MessageRole.USER and mm.tool_use_id == m.tool_use_id
-                for mm in msgs[i + 1 :]
-            )
-            return msgs[:i] if not has_result else msgs
-        if m.role == MessageRole.USER and not m.tool_use_id:
-            break
-    return msgs
+    cut = bad[0]
+    while cut > 0 and _is_tool_use_msg(msgs[cut - 1]):
+        cut -= 1
+    return msgs[:cut]
 
 
 def _humanize_duration(gap_seconds: float) -> str:
@@ -141,7 +184,7 @@ def _make_session_context(session_dir: Path) -> SessionContext:
 def _persist_compact(session_dir: Path, msgs: list[Message]) -> None:
     """压缩后把新消息写回 JSONL：先写 compact 标记，再逐条重写。
 
-    下次恢复时 `_read_messages` 遇 compact 标记会丢弃旧消息，只读到压缩后的
+    下次恢复时 `read_messages` 遇 compact 标记会丢弃旧消息，只读到压缩后的
     内容——避免每次 resume 都重新压缩一次。失败仅告警不阻断恢复（下次仍会压缩，
     语义不变）。
     """
@@ -208,10 +251,13 @@ async def restore_session(
         context_window: 上下文窗口，用于超限阈值判断。
 
     Returns:
-        RestoreResult(conversation, skipped, compacted, time_gap_seconds)。
+        RestoreResult(conversation, skipped, compacted, time_gap_seconds,
+        unpaired_tool_uses)。
     """
     d = Path(session_dir)
-    msgs, skipped, last_ts = _read_messages(d / CONVERSATION_FILENAME)
+    msgs, skipped, last_ts = read_messages(d / CONVERSATION_FILENAME)
+    # 先记录未配对项再截断——截断会把它们从 msgs 里抹掉，而恢复判定要用
+    unpaired = [msgs[i] for i in _unpaired_tool_use_indices(msgs)]
     msgs = _truncate_dangling_tool_use(msgs)
 
     session = _make_session_context(d)
@@ -242,4 +288,5 @@ async def restore_session(
         skipped=skipped,
         compacted=compacted,
         time_gap_seconds=gap,
+        unpaired_tool_uses=unpaired,
     )

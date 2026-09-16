@@ -85,6 +85,18 @@ class TestReadFile:
         assert read_file.is_concurrency_safe({}) is True
         assert read_file.category() == "file"
 
+    @pytest.mark.asyncio
+    async def test_default_limit_2000(self, read_file, ctx, tmp_root):
+        """未显式传 limit 时默认读 2000 行,超大文件被截断(对齐参考项目)。"""
+        f = tmp_root / "big.txt"
+        f.write_text("".join(f"line{i}\n" for i in range(2500)), encoding="utf-8")
+        result = await read_file.execute(ctx, {"file_path": str(f)})
+        assert result.success is True
+        # 默认 limit=2000 → 到 2000 行截断
+        assert result.data == "".join(f"line{i}\n" for i in range(2000))
+        assert result.meta["truncated"] is True
+        assert result.meta["total_lines"] == 2500
+
 
 class TestWriteFile:
     def test_name(self, write_file):
@@ -236,15 +248,17 @@ class TestEditFile:
         assert result.meta["edits_matched"] == 0
 
     @pytest.mark.asyncio
-    async def test_only_first_occurrence_replaced(self, edit_file, ctx, tmp_root):
-        f = tmp_root / "first_only.txt"
+    async def test_old_string_must_be_unique(self, edit_file, ctx, tmp_root):
+        """old_string 出现多次 → 判为歧义,报错且回滚(对齐参考项目 edit_file)。"""
+        f = tmp_root / "unique.txt"
         f.write_text("A A A", encoding="utf-8")
         result = await edit_file.execute(
             ctx,
             {"file_path": str(f), "edits": [{"old_string": "A", "new_string": "X"}]},
         )
-        assert result.success is True
-        assert f.read_text(encoding="utf-8") == "X A A"
+        assert result.success is False
+        assert "must be unique" in result.error
+        assert f.read_text(encoding="utf-8") == "A A A"  # 回滚,文件未变
 
     @pytest.mark.asyncio
     async def test_file_not_found(self, edit_file, ctx):

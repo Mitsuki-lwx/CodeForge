@@ -67,3 +67,21 @@ class TestBash:
         assert result.success is True, f"bash failed: {result.error}"
         assert "out" in result.meta["stdout"]
         assert "err" in result.meta["stderr"]
+
+    @pytest.mark.asyncio
+    async def test_grep_no_match_non_error(self, bash, ctx, tmp_path):
+        """grep 退出码 1(无匹配)不算错误,success=True 且附语义提示。"""
+        import tempfile
+        from pathlib import Path
+        ctx2 = ExecutionContext(cwd=tmp_path, session_id="t")
+        # 定义一个含目标字符串但不匹配的模式文件?直接用管道:printf | grep 不匹配
+        result = await bash.execute(ctx2, {"command": "echo abc | grep -q zzz"})
+        assert result.success is True, f"grep exit1 should be non-error: {result}"
+        assert "no matches found" in result.data
+
+    @pytest.mark.asyncio
+    async def test_ordinary_nonzero_is_error(self, bash, ctx):
+        """普通命令(如 ls 不存在的目录)非零退出 → 判为错误。"""
+        result = await bash.execute(ctx, {"command": "ls /nonexistent_dir_xyzabc 2>&1"})
+        assert result.success is False
+        assert result.meta["exit_code"] != 0

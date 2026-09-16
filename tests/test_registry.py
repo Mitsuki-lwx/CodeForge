@@ -90,6 +90,18 @@ class TestTimeout:
         result = await registry.execute("test_tool", ctx, {"name": "x"})
         assert result.success is False
         assert "timed out" in result.error.lower()
+        assert result.meta.get("timed_out") is True
+
+    @pytest.mark.asyncio
+    async def test_general_error_not_timed_out(self, registry, ctx):
+        class BoomTool(_ConcreteTool):
+            async def execute(self, context, input):
+                raise RuntimeError("boom")
+
+        registry.register(BoomTool())
+        result = await registry.execute("test_tool", ctx, {"name": "x"})
+        assert result.success is False
+        assert result.meta.get("timed_out") is False
 
 
 class TestRetry:

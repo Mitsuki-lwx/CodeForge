@@ -52,9 +52,10 @@ from core.context_compression.const import (
 )
 from core.context_compression.token import estimate_tokens, usage_anchor
 from core.hooks.events import HookContext
+from core.host.journal import SIDE_EFFECT_CATEGORIES, SideEffectJournal
 from core.permissions.checker import Decision, PermissionChecker
 from core.permissions.dangerous import DangerousCommandDetector
-from core.permissions.modes import PermissionMode
+from core.permissions.modes import PermissionMode, ToolCategory
 from core.permissions.rules import RuleEngine, extract_content
 from core.permissions.sandbox import PathSandbox
 from core.prompts.builder import PromptBuilder
@@ -85,6 +86,39 @@ from llm.stream_events import (
 logger = logging.getLogger(__name__)
 
 
+# ── 工具 category() → 权限类别（read/write/command）归一化 ──
+# 工具自述的 category 比权限系统需要的更细（file / code_search / shell /
+# task / skill / mcp …），权限系统只认三档，这里做收敛。
+_READ_CATEGORIES: frozenset[str] = frozenset(
+    {"read", "file_read", "search", "code_search"}
+)
+_WRITE_CATEGORIES: frozenset[str] = frozenset({"write", "file_write", "edit", "plan"})
+_COMMAND_CATEGORIES: frozenset[str] = frozenset({"shell", "command", "bash"})
+
+
+def normalize_tool_category(category: str, is_read_only: bool) -> ToolCategory:
+    """把 `tool.category()` 归一化为权限类别。
+
+    `file` 是读写工具**共用**的 category（`read_file` / `write_file` /
+    `edit_file` 都返回 `"file"`），因此必须靠 `is_read_only` 区分。若把
+    `"file"` 一律当成 command 兜底，写文件会被误判成命令执行，导致：
+
+    - `acceptEdits` 模式对写文件失效（矩阵是 write→allow，但实际走 command→ask）；
+    - 写操作与命令执行绑在同一分类上，无法单独设策略。
+
+    未识别的 category 退回原有兜底：只读→read，否则→command。
+    """
+    if category in _READ_CATEGORIES:
+        return "read"
+    if category in _WRITE_CATEGORIES:
+        return "write"
+    if category in _COMMAND_CATEGORIES:
+        return "command"
+    if category == "file":
+        return "read" if is_read_only else "write"
+    return "read" if is_read_only else "command"
+
+
 class Agent:
     """ReAct 循环编排器。"""
 
@@ -99,6 +133,7 @@ class Agent:
         instructions: str = "",
         memory: str = "",
         hooks: object | None = None,
+        journal: SideEffectJournal | None = None,
         # ── 子 Agent 扩展参数 ──
         system_prompt: str | None = None,
         max_turns: int = 0,
@@ -123,6 +158,9 @@ class Agent:
         self._turn_end_reason: str = "completed"
         self._total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         self._runtime = runtime
+        # 副作用 journal（可选）：host 模式下记录写/命令类调用，供崩溃恢复判定
+        # 「哪些调用可能已经生效」。为空则完全不做记账（默认路径行为不变）。
+        self._journal = journal
         # 后台记忆更新任务集合（退出时等待）
         self._memory_tasks: set[asyncio.Task] = set()
 
@@ -1250,28 +1288,25 @@ class Agent:
             entry = content if success else f"Error: {content}"
             self._conversation.add_tool_result(tu.id, entry)
 
+    def _tool_category(self, tu: ToolUse) -> tuple[bool, ToolCategory]:
+        """取工具的 `(是否只读, 权限类别)`。
+
+        工具查不到时按最保守的一档处理（非只读 + command）：既不放过任何写权限，
+        也让 journal 把它当成有副作用记下来。
+        """
+        try:
+            tool = self._registry.get(tu.name)
+            is_read = tool.is_read_only()
+            return is_read, normalize_tool_category(tool.category(), is_read)
+        except Exception:
+            return False, "command"
+
     def _check_tool_permission(self, tu: ToolUse) -> Decision:
         """检查单个工具调用的权限。"""
         # 强制拒绝集：命中即 deny（试验/评测注入）
         if tu.name in getattr(self, "_deny_tools", set()):
             return Decision(effect="deny", reason="tool denied by forced deny_tools")
-        try:
-            tool = self._registry.get(tu.name)
-            is_read = tool.is_read_only()
-            cat = tool.category()
-        except Exception:
-            is_read = False
-            cat = "command"
-        if cat in ("read", "file_read", "search", "code_search"):
-            tc = "read"
-        elif cat in ("write", "file_write", "edit", "plan"):
-            tc = "write"
-        elif cat in ("shell", "command", "bash"):
-            tc = "command"
-        elif is_read:
-            tc = "read"
-        else:
-            tc = "command"
+        is_read, tc = self._tool_category(tu)
         decision = self._permission_checker.check(tu.name, is_read, tc, tu.input)
         # ── 子 Agent dontAsk 模式：Ask 自动转 Allow ──
         if self._dont_ask and decision.effect == "ask":
@@ -1303,6 +1338,18 @@ class Agent:
             tool_meta["timed_out"] = True
         except Exception as e:
             ok, content = False, str(e)
+        # 副作用记账：工具已经成功执行、工作区可能已被改动，立刻落盘。
+        # 刻意放在 post_tool 钩子之前——钩子抛错不能把「已经改过工作区」这件事吞掉。
+        # journal 关闭时不做任何额外工作（连类别都不查），默认路径零开销。
+        if ok and self._journal is not None:
+            _is_read, category = self._tool_category(tu)
+            if category in SIDE_EFFECT_CATEGORIES:
+                self._journal.record(
+                    tool_use_id=tu.id,
+                    tool_name=tu.name,
+                    category=category,
+                    result=content,
+                )
         if self._hooks is not None:
             self._emit_hook(
                 "post_tool",
