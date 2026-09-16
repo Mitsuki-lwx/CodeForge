@@ -4,6 +4,12 @@
 # 运行时自动生成的记忆文件
 .codeforge/memory/
 
+# 会话宿主运行时状态：run 状态库 + 会合信息 + 每次启动轮换的 token
+# ⚠️ host.token 是控制通道凭据，属密钥，绝不入库
+.codeforge/host/
+.codeforge/host.json
+.codeforge/host.token
+
 # 本地 Claude Code 设置
 .claude/
 
