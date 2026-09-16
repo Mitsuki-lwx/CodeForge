@@ -37,3 +37,17 @@ Thumbs.db
 # 非功能性的 Markdown 文档（只保留 .codeforge/skills/*/SKILL.md）
 CLAUDE.md
 docs/
+
+# 测试报告产物（pytest --junit-xml）
+.junit_*.xml
+
+# 验证/分析证据产物（对比图、报告等，非产品代码）
+outputs/
+
+# 本地 agent 会话数据与一次性脚本（含本机路径与临时排查文件）
+.workbuddy-ai/
+
+# 个人文档与观测数据导出（不属产品代码）
+interview_prep.md
+project_experience.md
+pg_*.json
