@@ -1,0 +1,313 @@
+"""后台任务管理器 单元测试。
+
+覆盖：launch / 完成状态 / 失败状态 / stop / send_message / done 队列 / 4 个管理工具。
+通过 monkeypatch 替换 core.agent.sub_agent.run_to_completion 为 fake，
+避免构造完整 Agent。
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import pytest
+
+import core.agent.sub_agent as sub_agent_mod
+from conversation.manager import ConversationManager
+from core.task.manager import (
+    BackgroundTask,
+    BackgroundTaskManager,
+    TaskBusyError,
+    TaskNotFoundError,
+    TaskStatus,
+)
+from core.task.tools import (
+    SendMessageTool,
+    TaskGetTool,
+    TaskListTool,
+    TaskStopTool,
+)
+from core.tool.context import ExecutionContext
+
+
+@pytest.fixture
+def manager() -> BackgroundTaskManager:
+    return BackgroundTaskManager()
+
+
+class _Calls:
+    """fake_run 的调用记录。"""
+
+    def __init__(self) -> None:
+        self.results = []
+        self.events_seen: list[tuple] = []
+        self.booms = []
+
+
+@pytest.fixture
+def fake_run():
+    """monkeypatch run_to_completion 为可编程 fake。"""
+
+    async def _fake(agent, conv, task="", events=None):
+        calls = agent._test_calls
+        if task:
+            conv.add_user_message(task)
+        if getattr(agent, "_boom", False):
+            raise RuntimeError("boom")
+        # 模拟工具事件
+        if events is not None:
+            try:
+                events.put_nowait(("tool", "fake_tool"))
+                events.put_nowait(("tool", "bash"))
+            except asyncio.QueueFull:
+                pass
+        result = agent._test_result
+        calls.results.append(result)
+        return result
+
+    return _fake
+
+
+def _make_agent(result: str = "done", calls=None) -> object:
+    class _Agent:
+        def __init__(self) -> None:
+            self._test_calls = calls if calls is not None else _Calls()
+            self._test_result = result
+            self._boom = False
+
+    return _Agent()
+
+
+def _ctx() -> ExecutionContext:
+    return ExecutionContext(cwd=Path.cwd(), session_id="test")
+
+
+# ── launch 与状态 ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_launch_completed(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+    agent = _make_agent("final output")
+
+    task_id = await mgr.launch(agent, conv, "worker", "do it")
+    assert task_id.startswith("task_")
+
+    q = mgr.subscribe_done()
+    done_id = await asyncio.wait_for(q.get(), timeout=3)
+    assert done_id == task_id
+
+    bt = mgr.get(task_id)
+    assert bt is not None
+    assert bt.status == TaskStatus.COMPLETED
+    assert bt.result == "final output"
+
+
+@pytest.mark.asyncio
+async def test_launch_failed(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+    agent = _make_agent()
+    agent._boom = True
+
+    task_id = await mgr.launch(agent, conv, "", "do it")
+    q = mgr.subscribe_done()
+    done_id = await asyncio.wait_for(q.get(), timeout=3)
+    assert done_id == task_id
+
+    bt = mgr.get(task_id)
+    assert bt.status == TaskStatus.FAILED
+    assert bt.err is not None
+    assert "boom" in str(bt.err)
+
+
+@pytest.mark.asyncio
+async def test_launch_aggregates_tool_count(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+    agent = _make_agent("res")
+
+    task_id = await mgr.launch(agent, conv, "w", "task")
+    q = mgr.subscribe_done()
+    await asyncio.wait_for(q.get(), timeout=3)
+
+    bt = mgr.get(task_id)
+    assert bt.tool_count == 2  # 2 个模拟工具事件
+    assert bt.last_activity == "bash"
+
+
+@pytest.mark.asyncio
+async def test_stop_nonexistent(manager):
+    ok = await manager.stop("nonexistent")
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+    agent = _make_agent("x")
+
+    task_id = await mgr.launch(agent, conv, "", "t")
+    bt = mgr.get(task_id)
+    assert bt is not None
+    ok = await mgr.stop(task_id)
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_list_returns_sorted(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    await mgr.launch(_make_agent("a"), ConversationManager(), "", "1")
+    await mgr.launch(_make_agent("b"), ConversationManager(), "", "2")
+    tasks = mgr.list()
+    assert len(tasks) == 2
+    assert tasks[0].start_time <= tasks[1].start_time
+
+
+@pytest.mark.asyncio
+async def test_send_message_resumes_completed(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+    agent = _make_agent("first")
+
+    task_id = await mgr.launch(agent, conv, "worker", "task one")
+    q = mgr.subscribe_done()
+    await asyncio.wait_for(q.get(), timeout=3)
+    bt = mgr.get(task_id)
+    assert bt.status == TaskStatus.COMPLETED
+
+    # 续派
+    new_id = await mgr.send_message("worker", "task two")
+    assert new_id == task_id
+    assert mgr.get(task_id).status == TaskStatus.RUNNING
+
+    # 等待第二次完成
+    await asyncio.wait_for(q.get(), timeout=3)
+    assert mgr.get(task_id).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_send_message_not_found(manager):
+    with pytest.raises(TaskNotFoundError):
+        await manager.send_message("ghost", "hello")
+
+
+@pytest.mark.asyncio
+async def test_send_message_busy():
+    """send_message 给 RUNNING 任务 → TaskBusyError。"""
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+    agent = _make_agent("x")
+
+    # 手动注册一个 RUNNING 任务（不真正跑）
+    bt = BackgroundTask(
+        id="task_busy",
+        name="busy",
+        sub_agent=agent,
+        conv=conv,
+        status=TaskStatus.RUNNING,
+    )
+    mgr._tasks["task_busy"] = bt
+    mgr._by_name["busy"] = "task_busy"
+
+    with pytest.raises(TaskBusyError):
+        await mgr.send_message("busy", "hi")
+
+
+@pytest.mark.asyncio
+async def test_cancel_all(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    await mgr.launch(_make_agent("a"), ConversationManager(), "", "1")
+    await mgr.launch(_make_agent("b"), ConversationManager(), "", "2")
+    await mgr.cancel_all()
+    # 不抛异常即可
+    assert len(mgr.list()) == 2
+
+
+# ── 4 个管理工具 ───────────────────────────────────────────────────
+
+
+def test_task_tool_names(manager):
+    assert TaskListTool(manager).name() == "TaskList"
+    assert TaskGetTool(manager).name() == "TaskGet"
+    assert TaskStopTool(manager).name() == "TaskStop"
+    assert SendMessageTool(manager).name() == "SendMessage"
+
+
+@pytest.mark.asyncio
+async def test_task_list_tool(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    await mgr.launch(_make_agent("a"), ConversationManager(), "w1", "do 1")
+    tool = TaskListTool(mgr)
+    result = await tool.execute(_ctx(), {})
+    assert result.success
+    assert "task_" in result.data
+    assert "w1" in result.data
+
+
+@pytest.mark.asyncio
+async def test_task_get_tool(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    task_id = await mgr.launch(_make_agent("x"), ConversationManager(), "w", "do")
+    tool = TaskGetTool(mgr)
+    result = await tool.execute(_ctx(), {"task_id": task_id})
+    assert result.success
+    assert task_id in result.data
+
+
+@pytest.mark.asyncio
+async def test_task_get_tool_not_found(manager):
+    tool = TaskGetTool(manager)
+    result = await tool.execute(_ctx(), {"task_id": "nonexistent"})
+    assert not result.success
+
+
+@pytest.mark.asyncio
+async def test_task_get_schema(manager):
+    tool = TaskGetTool(manager)
+    schema = tool.input_schema()
+    assert "task_id" in schema["properties"]
+    assert "task_id" in schema["required"]
+
+
+@pytest.mark.asyncio
+async def test_task_stop_tool(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    task_id = await mgr.launch(_make_agent("x"), ConversationManager(), "", "do")
+    tool = TaskStopTool(mgr)
+    result = await tool.execute(_ctx(), {"task_id": task_id})
+    assert result.success
+    assert "cancellation_requested" in result.data
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool(monkeypatch, fake_run):
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+    await mgr.launch(_make_agent("first"), conv, "w", "do one")
+    q = mgr.subscribe_done()
+    await asyncio.wait_for(q.get(), timeout=3)
+    tool = SendMessageTool(mgr)
+    result = await tool.execute(_ctx(), {"name": "w", "message": "follow up"})
+    assert result.success
+    assert "resumed" in result.data
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool_not_found(manager):
+    tool = SendMessageTool(manager)
+    result = await tool.execute(_ctx(), {"name": "ghost", "message": "hi"})
+    assert not result.success
