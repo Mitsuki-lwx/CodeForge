@@ -369,7 +369,14 @@ async def _http_capture():
 
 
 @pytest.mark.asyncio
-async def test_http_body_template_renders(tmp_path):
+async def test_http_body_template_renders(tmp_path, monkeypatch):
+    # httpx 默认 `trust_env=True`，会读 `HTTP_PROXY`/`HTTPS_PROXY`。本机环境设了
+    # 一个本机代理却没设 `NO_PROXY`，于是连 127.0.0.1 的请求也被送去代理，
+    # 根本到不了下面的测试服务器（表现为 `captured` 里没有 `data`，很像时序问题）。
+    # 这里显式把 loopback 排除掉：本用例要测的是**模板渲染**，不是代理行为。
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+
     server, port, captured = await _http_capture()
     async with server:
         rule = HookRule(
