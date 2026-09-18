@@ -50,6 +50,18 @@ features:
     judge_prompt: ""        # 自定义复杂度判断指令；空则用内置
     cheap_tier: "cheap"     # 便宜模型的价位标记
 
+  host:                     # 会话宿主（后台跑 run，关掉终端也不影响）
+    enabled: false          # true = TUI 作为客户端连 host；默认 false 走原路径
+    port: 0                 # 0 = 随机端口；固定端口便于防火墙/脚本对接
+    token_file: ""          # 控制通道凭据路径；空 = .codeforge/host.token（每次启动轮换）
+    unattended_policy: deny_all
+    # ↑ 无人环境里没有按键的人，`ask` 级工具决策由谁代答：
+    #   deny_all    一律拒绝（默认，最保守）
+    #   allow_write 另放行写文件 —— 需要 agent 真的改代码时用
+    #   allow_all   全部放行
+    # 只读工具本来就不询问、不受本策略影响；计划确认等交互式工具任何档位都拒。
+    # 子 Agent（fork / 队友）继承父的这一档，不会自己升级成全放行。
+
 # ── Agent 循环策略 ──
 # "react"（默认）或自定义模块路径（spec_loop）
 loop: ""

@@ -57,14 +57,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--unattended-policy",
         dest="unattended_policy",
-        default="deny_all",
+        default=None,  # None = 未指定；交给 config 的 features.host.unattended_policy
         choices=["allow_all", "allow_write", "deny_all"],
         help=(
             "host 子命令：无人值守下如何代答 ask 级工具决策。"
-            "deny_all（默认）一律拒绝，与不给策略时的保守行为一致；"
-            "allow_write 另放行写文件（需要 agent 改代码时用）；allow_all 全放。"
-            "只读工具本就不询问、不受本策略影响；交互式工具（计划确认等）任何档位都拒。"
+            "省略时取 config 的 features.host.unattended_policy（默认 deny_all）。"
+            "deny_all 一律拒绝；allow_write 另放行写文件（需要 agent 改代码时用）；"
+            "allow_all 全放。只读工具本就不询问、不受本策略影响；"
+            "交互式工具（计划确认等）任何档位都拒。"
         ),
+    )
+    p.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="host 子命令：监听端口（0 = 随机）。省略时取 features.host.port。",
     )
     return p.parse_args(argv)
 
@@ -284,6 +291,30 @@ def _cmd_attach(args: argparse.Namespace) -> int:
         return 130
 
 
+def _resolve_host_settings(args: argparse.Namespace) -> tuple[str, int]:
+    """算出 host 的 (无人值守策略, 端口)：CLI 显式传的优先，否则取 config。
+
+    配置读不出来时**不拦住 host** —— 退回安全默认（`deny_all` + 随机端口），
+    并把原因打到 stderr。host 起不来通常比"用默认档起来"更糟。
+    """
+    cfg_policy, cfg_port = "deny_all", 0
+    try:
+        from config.loader import load_config_full
+
+        _, features = load_config_full("config.yaml")
+        host_cfg = getattr(features, "host", None)
+        if host_cfg is not None:
+            cfg_policy = getattr(host_cfg, "unattended_policy", "") or cfg_policy
+            cfg_port = int(getattr(host_cfg, "port", 0) or 0)
+    except Exception as e:  # noqa: BLE001 —— 配置问题不该让 host 起不来
+        print(f"警告：读取 features.host 失败（{e}），按默认档启动。", file=sys.stderr)
+
+    policy = getattr(args, "unattended_policy", None) or cfg_policy
+    port_arg = getattr(args, "port", None)
+    port = cfg_port if port_arg is None else int(port_arg)
+    return policy, port
+
+
 def _cmd_host(args: argparse.Namespace) -> int:
     """`codeforge host` —— 前台启动会话宿主。"""
     import asyncio
@@ -292,7 +323,7 @@ def _cmd_host(args: argparse.Namespace) -> int:
     from core.host import SessionLockedError
     from core.host.server import HostAlreadyRunningError, start_host
 
-    policy = getattr(args, "unattended_policy", "deny_all")
+    policy, port = _resolve_host_settings(args)
 
     async def _serve() -> int:
         provider = _primary_provider()
@@ -301,6 +332,7 @@ def _cmd_host(args: argparse.Namespace) -> int:
                 provider=provider,
                 workspace=Path.cwd(),
                 unattended_policy=policy,
+                port=port,
             )
         except HostAlreadyRunningError as e:
             print(f"该工作区已有活跃 run，不能重复起 host：{e}")

@@ -26,6 +26,21 @@ class RouterConfig:
 
 
 @dataclass
+class HostConfig:
+    """会话宿主配置（`features.host`）。
+
+    默认全关：`enabled=False` 时主流程走原路径，行为与引入这项配置之前完全一致。
+    `unattended_policy` 只管 host 里"没有人按键"时 `ask` 级决策怎么代答，
+    合法取值见 `core.permissions.modes.UnattendedPolicy`（loader 会校验）。
+    """
+
+    enabled: bool = False
+    port: int = 0  # 0 = 让内核挑随机端口
+    token_file: str = ""  # 空 = 用默认的 .codeforge/host.token
+    unattended_policy: str = "deny_all"
+
+
+@dataclass
 class FeaturesConfig:
     """功能开关（团队系统等）。"""
 
@@ -33,3 +48,4 @@ class FeaturesConfig:
     fork_teammate: bool = False
     router: RouterConfig | None = None
     loop: str = ""  # Agent 循环策略（spec_loop）：react 或自定义模块路径
+    host: HostConfig | None = None  # 会话宿主（features.host）

@@ -139,7 +139,52 @@ def load_config_full(path: str | Path = "config.yaml") -> tuple[list[ProviderCon
                 judge_prompt=str(raw_router.get("judge_prompt", "") or ""),
                 cheap_tier=str(raw_router.get("cheap_tier", "") or "cheap"),
             )
+        raw_host = raw_features.get("host", None)
+        if isinstance(raw_host, dict):
+            features.host = _parse_host_config(raw_host)
     return providers, features
+
+
+def _parse_host_config(raw: dict) -> object:
+    """解析 `features.host`。
+
+    非法值一律**告警并退回默认**，不阻断启动 —— 配置写错的代价不该是"起不来"，
+    而 host 的档位本身有安全默认（`deny_all`）。
+
+    合法档位取自 `core.permissions.modes.UnattendedPolicy`（单一事实来源），
+    避免这里手抄一份字符串集合、日后与实现漂移。
+    """
+    from config.model import HostConfig
+    from core.permissions.modes import UnattendedPolicy
+
+    valid = sorted(p.value for p in UnattendedPolicy)
+    policy = str(raw.get("unattended_policy", "") or "deny_all").strip()
+    if policy not in valid:
+        print(
+            f"警告：features.host.unattended_policy='{policy}' 不是有效档位"
+            f"（可选 {valid}），已按 'deny_all' 处理。",
+            file=sys.stderr,
+        )
+        policy = "deny_all"
+
+    try:
+        port = int(raw.get("port", 0) or 0)
+    except (TypeError, ValueError):
+        print("警告：features.host.port 不是整数，已按 0（随机端口）处理。", file=sys.stderr)
+        port = 0
+    if not 0 <= port <= 65535:
+        print(
+            f"警告：features.host.port={port} 超出 0-65535，已按 0（随机端口）处理。",
+            file=sys.stderr,
+        )
+        port = 0
+
+    return HostConfig(
+        enabled=bool(raw.get("enabled", False)),
+        port=port,
+        token_file=str(raw.get("token_file", "") or ""),
+        unattended_policy=policy,
+    )
 
 
 def _default_features():
