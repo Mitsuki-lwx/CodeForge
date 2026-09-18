@@ -346,14 +346,17 @@ class HostServer:
             self._busy = False
 
     async def _deny_hitl(self, event: HITLRequired) -> None:
-        """host 里没有人工确认通道，一律拒绝。
+        """兜底：没配无人值守策略时的保守处置（一律拒绝）。
 
-        保守占位：拒绝是可观测、可解释的；静默放行则会在无人值守时把写权限交出去
-        而没有任何记录。真正的策略在任务 14。
+        正常情况下 `ask` 级决策在权限层就被 `UnattendedPolicy` 代答了，
+        这里收不到事件。只有当 host 既没给策略、又确实产生了需要人决策的
+        调用时才会走到——拒绝是可观测、可解释的，静默放行则会在无人值守时
+        把写权限交出去而没有任何记录。
         """
         self._bundle.agent.resolve_hitl(event.tool_use_id, False, "deny")
-        logger.info(
-            "host 模式拒绝 ask 级工具调用 %s（暂无人工确认通道）", event.tool_name
+        logger.warning(
+            "host 未配置无人值守策略，保守拒绝 %s（如需放行请用 --unattended-policy）",
+            event.tool_name,
         )
 
     async def _publish(self, event: Any) -> None:
@@ -588,6 +591,7 @@ async def start_host(
     session_dir: str | Path | None = None,
     conversation: ConversationManager | None = None,
     loop_spec: str = "",
+    unattended_policy: str | None = None,
     port: int = DEFAULT_PORT,
     host: str = HOST_BIND_ADDRESS,
     config_path: str = "config.yaml",
@@ -622,6 +626,7 @@ async def start_host(
         provider=provider,
         workspace=ws,
         loop_spec=loop_spec,
+        unattended_policy=unattended_policy,
         session_dir=session_dir,
         conversation=conversation,
         lock_session=True,

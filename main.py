@@ -54,6 +54,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--loop", default="", help="Agent 循环策略：react 或自定义模块路径（spec_loop）"
     )
+    p.add_argument(
+        "--unattended-policy",
+        dest="unattended_policy",
+        default="deny_all",
+        choices=["allow_all", "allow_write", "deny_all"],
+        help=(
+            "host 子命令：无人值守下如何代答 ask 级工具决策。"
+            "deny_all（默认）一律拒绝，与不给策略时的保守行为一致；"
+            "allow_write 另放行写文件（需要 agent 改代码时用）；allow_all 全放。"
+            "只读工具本就不询问、不受本策略影响；交互式工具（计划确认等）任何档位都拒。"
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -272,7 +284,7 @@ def _cmd_attach(args: argparse.Namespace) -> int:
         return 130
 
 
-def _cmd_host() -> int:
+def _cmd_host(args: argparse.Namespace) -> int:
     """`codeforge host` —— 前台启动会话宿主。"""
     import asyncio
     import signal
@@ -280,10 +292,16 @@ def _cmd_host() -> int:
     from core.host import SessionLockedError
     from core.host.server import HostAlreadyRunningError, start_host
 
+    policy = getattr(args, "unattended_policy", "deny_all")
+
     async def _serve() -> int:
         provider = _primary_provider()
         try:
-            server = await start_host(provider=provider, workspace=Path.cwd())
+            server = await start_host(
+                provider=provider,
+                workspace=Path.cwd(),
+                unattended_policy=policy,
+            )
         except HostAlreadyRunningError as e:
             print(f"该工作区已有活跃 run，不能重复起 host：{e}")
             print("查看：codeforge runs")
@@ -295,6 +313,7 @@ def _cmd_host() -> int:
         print(f"host 已在监听 127.0.0.1:{server.port}")
         print(f"run_id = {server.run.id}")
         print(f"session = {server.run.session_id}")
+        print(f"无人值守策略 = {policy}（ask 级工具决策按此代答）")
         print("另一个终端可用 `codeforge runs` / `codeforge attach <run_id>`；Ctrl-C 停止。")
 
         # Ctrl-C 走"请求优雅关闭"而不是让 asyncio 取消等待：取消会把 run 落成
@@ -342,7 +361,7 @@ def main() -> None:
     args = _parse_args()
 
     if args.command == "host":
-        sys.exit(_cmd_host())
+        sys.exit(_cmd_host(args))
     if args.command == "runs":
         sys.exit(_cmd_runs())
     if args.command == "attach":

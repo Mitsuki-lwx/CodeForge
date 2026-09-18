@@ -10,6 +10,9 @@
 .codeforge/host.json
 .codeforge/host.token
 
+# agent 在会话里写出来的工作产物（端到端验证会让它写样例文件）
+notes/
+
 # 本地 Claude Code 设置
 .claude/
 

@@ -55,7 +55,13 @@ from core.hooks.events import HookContext
 from core.host.journal import SIDE_EFFECT_CATEGORIES, SideEffectJournal
 from core.permissions.checker import Decision, PermissionChecker
 from core.permissions.dangerous import DangerousCommandDetector
-from core.permissions.modes import PermissionMode, ToolCategory
+from core.permissions.modes import (
+    INTERACTIVE_TOOLS,
+    PermissionMode,
+    ToolCategory,
+    UnattendedPolicy,
+    unattended_decide,
+)
 from core.permissions.rules import RuleEngine, extract_content
 from core.permissions.sandbox import PathSandbox
 from core.prompts.builder import PromptBuilder
@@ -168,6 +174,9 @@ class Agent:
         self._system_prompt_override = system_prompt
         self._max_turns = max_turns
         self._dont_ask = dont_ask
+        # 无人值守策略（host / 无头）：把 `ask` 级决策按策略代答，避免挂死等人。
+        # None = 不启用（TUI 等有人值守路径的默认）。
+        self._unattended_policy: UnattendedPolicy | None = None
         self._approval_upgrader = approval_upgrader
 
         # ── Permission system ──
@@ -392,6 +401,22 @@ class Agent:
             # 记录到会话缓存（由 TUI 传递 content）
             pass
         self._hitl_event.set()
+
+    def set_unattended_policy(
+        self, policy: UnattendedPolicy | str | None
+    ) -> None:
+        """设置无人值守策略（host / 无头）。
+
+        设置后 `ask` 级决策由策略代答，不再产生 HITL 事件——无人环境没有
+        按键的人，挂在 HITL 上就是挂死。传 None 关闭（回到有人值守语义）。
+        """
+        self._unattended_policy = (
+            UnattendedPolicy(policy) if policy is not None else None
+        )
+
+    @property
+    def unattended_policy(self) -> UnattendedPolicy | None:
+        return self._unattended_policy
 
     def toggle_plan_mode(self) -> PlanMode:
         """切换 Plan Mode 开关。"""
@@ -1154,6 +1179,14 @@ class Agent:
             if decision.effect == "deny":
                 results[tu.id] = (False, decision.reason, 0, {})
             elif decision.effect == "ask":
+                # 顺序要紧：**先 clear 再 yield**。
+                # yield 把控制权交给调用方，而调用方可能在同一轮事件循环里立刻
+                # 调 resolve_hitl（host 无人值守路径就是自动拒绝，无人工延迟）。
+                # 若 clear 放在 yield 之后，生成器恢复时会把这期间刚 set 的事件
+                # 重新清掉，随后的 wait() 永远等不到 → 回合静默挂死。
+                # TUI 路径因为有人工操作延迟，set 总发生在 wait() 之后，恰好
+                # 绕过了这个竞态，所以问题只在无人值守场景暴露。
+                self._hitl_event.clear()
                 yield HITLRequired(
                     tool_name=tu.name,
                     tool_use_id=tu.id,
@@ -1161,7 +1194,6 @@ class Agent:
                     arguments=tu.input,
                     risk_hint=decision.reason,
                 )
-                self._hitl_event.clear()
                 await self._hitl_event.wait()
                 allowed = self._hitl_results.get(tu.id, False)
                 if allowed:
@@ -1308,9 +1340,23 @@ class Agent:
             return Decision(effect="deny", reason="tool denied by forced deny_tools")
         is_read, tc = self._tool_category(tu)
         decision = self._permission_checker.check(tu.name, is_read, tc, tu.input)
-        # ── 子 Agent dontAsk 模式：Ask 自动转 Allow ──
-        if self._dont_ask and decision.effect == "ask":
-            return Decision(effect="allow", reason="dontAsk: auto-approved")
+        if decision.effect == "ask":
+            # ── 无人值守策略：代答 ask（在最早点决定，不产生 HITL 事件）──
+            policy = self._unattended_policy
+            if policy is not None:
+                if tu.name in INTERACTIVE_TOOLS:
+                    return Decision(
+                        effect="deny",
+                        reason=f"unattended:{policy.value} 拒绝交互式工具 {tu.name}",
+                    )
+                effect = unattended_decide(policy, tc)
+                return Decision(
+                    effect=effect,
+                    reason=f"unattended:{policy.value} category={tc}",
+                )
+            # ── 子 Agent dontAsk 模式：Ask 自动转 Allow ──
+            if self._dont_ask:
+                return Decision(effect="allow", reason="dontAsk: auto-approved")
         return decision
 
     def _describe_tool_action(self, tu: ToolUse) -> str:

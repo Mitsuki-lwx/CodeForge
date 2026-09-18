@@ -213,6 +213,7 @@ async def build_session(
     workspace: str | Path,
     loop_spec: str = "",
     headless: bool = False,
+    unattended_policy: str | None = None,
     session_dir: str | Path | None = None,
     conversation: ConversationManager | None = None,
     reuse: ReuseContext | None = None,
@@ -227,6 +228,10 @@ async def build_session(
         loop_spec: Agent 循环策略（CLI `--loop` 优先，空则读 config `loop:`）。
         headless: 无头模式。当前等价于「无人值守放行 ask 级工具决策」，
             与既有 `--task` 行为保持一致。
+        unattended_policy: 无人值守策略（`allow_all` / `allow_write` /
+            `deny_all`）。给了它就走策略代答 `ask` 级决策；
+            未给但 `headless=True` 时，退回历史的「一律放行」语义。
+            两者都不给 = 有人值守（`ask` 走 HITL）。
         session_dir: 恢复会话时传入既有会话目录；为空则新建。
         conversation: 恢复会话时传入已还原的对话；为空则新建。
         reuse: 同进程内切换会话时复用的资源，见 `ReuseContext`。
@@ -325,7 +330,12 @@ async def build_session(
 
     # 无头模式：自动放行 ask 级工具，否则无人环境会卡在 HITL 审批上。
     # 注意 deny 不受影响（危险命令仍被拦）。
-    if headless:
+    #
+    # 显式策略优先于 headless 这个粗粒度开关：host 需要有"放行到什么程度"的
+    # 选择（默认只放只读），而不是只有"全放"和"全拒"两档。
+    if unattended_policy is not None:
+        agent.set_unattended_policy(unattended_policy)
+    elif headless:
         agent._dont_ask = True
 
     # ── ExitPlanMode 回调注入 ──

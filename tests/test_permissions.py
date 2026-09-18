@@ -132,3 +132,250 @@ def test_bypass_allows_non_safe_command():
     """bypassPermissions 放行非安全命令（但危险命令仍被 Layer 1b 拦住，见上）。"""
     args = {"command": "python build.py"}
     assert _decide(PermissionMode.BYPASS, "bash", "command", args) == "allow"
+
+
+# ── HITL 时序：yield 之后立刻 resolve 不得挂死 ──────────────────────────
+#
+# 回归背景：核心循环里 `_hitl_event.clear()` 曾位于 `yield HITLRequired(...)`
+# **之后**。yield 把控制权交给调用方，而无人值守调用方（host._deny_hitl）
+# 会在同一轮事件循环里立刻 resolve_hitl → set()；生成器恢复后随即 clear()，
+# 把这个信号清掉，接着 wait() 永久阻塞。表现是「回合静默挂死：无事件、无日志、
+# 无出站连接」。TUI 路径有人工操作延迟，set 总落在 wait() 之后，因此长期掩盖。
+#
+# 下面用 monkeypatch 把权限判定固定为 ask，让测试只针对时序本身，不与
+# 具体权限策略（仍在演进）耦合。
+
+
+def _hitl_agent():
+    import tempfile
+    from pathlib import Path
+
+    from conversation.manager import ConversationManager
+    from core.agent.agent import Agent
+    from core.agent.config import AgentConfig
+    from core.tool.context import ExecutionContext
+    from core.tool.registry import ToolRegistry
+
+    class _Cfg:
+        model = "x"
+        context_window = 200000
+
+    class _Client:
+        config = _Cfg()
+
+    return Agent(
+        registry=ToolRegistry(),
+        llm_client=_Client(),
+        exec_ctx=ExecutionContext(cwd=Path(tempfile.mkdtemp()), session_id="main"),
+        conversation=ConversationManager(),
+        config=AgentConfig(max_iterations=3),
+    )
+
+
+def _ask_tool_use(tu_id: str):
+    from llm.stream_events import ToolUse
+
+    return ToolUse(id=tu_id, name="write_file", input={"path": "a.txt", "content": "x"})
+
+
+async def test_hitl_resolved_immediately_does_not_deadlock(monkeypatch):
+    """无人值守消费模式：yield 后**立刻** resolve，回合必须正常收敛。
+
+    这就是 host 的路径（自动拒绝、零人工延迟），修复前会永久卡住。
+    """
+    import asyncio
+
+    from core.agent.events import HITLRequired
+    from core.permissions.checker import Decision
+
+    agent = _hitl_agent()
+    monkeypatch.setattr(
+        agent,
+        "_check_tool_permission",
+        lambda tu: Decision(effect="ask", reason="test-forces-ask"),
+    )
+
+    seen: list[str] = []
+
+    async def consume():
+        async for ev in agent._execute_tools([_ask_tool_use("tu-immediate")]):
+            if isinstance(ev, HITLRequired):
+                seen.append(ev.tool_use_id)
+                agent.resolve_hitl(ev.tool_use_id, False, "deny")
+
+    await asyncio.wait_for(consume(), timeout=5)
+    assert seen == ["tu-immediate"]
+
+
+async def test_hitl_resolved_from_another_task_works(monkeypatch):
+    """TUI 式异步确认（下一轮事件循环再 resolve）同样不能被破坏。"""
+    import asyncio
+
+    from core.agent.events import HITLRequired
+    from core.permissions.checker import Decision
+
+    agent = _hitl_agent()
+    monkeypatch.setattr(
+        agent,
+        "_check_tool_permission",
+        lambda tu: Decision(effect="ask", reason="test-forces-ask"),
+    )
+
+    seen: list[str] = []
+
+    async def consume():
+        async for ev in agent._execute_tools([_ask_tool_use("tu-async")]):
+            if isinstance(ev, HITLRequired):
+                seen.append(ev.tool_use_id)
+                asyncio.get_running_loop().call_soon(
+                    agent.resolve_hitl, ev.tool_use_id, False, "deny"
+                )
+
+    await asyncio.wait_for(consume(), timeout=5)
+    assert seen == ["tu-async"]
+
+
+# ── 无人值守策略（host / 无头）─────────────────────────────────────────
+#
+# 无人环境没有按键的人，`ask` 级决策必须由策略代答，否则回合挂在 HITL 上
+# 就是挂死（见文件上方 HITL 时序段）。这里固定两条语义：
+#   1) 策略**只代答 ask**，不覆盖既有管线的 allow/deny；
+#   2) 任何策略下都不得残留 ask，且交互式工具一律拒绝。
+
+
+def _policy_agent(policy=None):
+    """带默认注册表的 agent —— 策略判定依赖工具真实 category。"""
+    import tempfile
+    from pathlib import Path
+
+    from conversation.manager import ConversationManager
+    from core.agent.agent import Agent
+    from core.agent.config import AgentConfig
+    from core.tool.context import ExecutionContext
+
+    class _Cfg:
+        model = "x"
+        context_window = 200000
+
+    class _Client:
+        config = _Cfg()
+
+    agent = Agent(
+        registry=get_default_registry(),
+        llm_client=_Client(),
+        exec_ctx=ExecutionContext(cwd=Path(tempfile.mkdtemp()), session_id="main"),
+        conversation=ConversationManager(),
+        config=AgentConfig(max_iterations=3),
+    )
+    if policy is not None:
+        agent.set_unattended_policy(policy)
+    return agent
+
+
+def _policy_effect(agent, name: str, **tool_input: object) -> str:
+    """走完整 `_check_tool_permission`（含无人值守代答）后的最终判定。"""
+    from llm.stream_events import ToolUse
+
+    return agent._check_tool_permission(
+        ToolUse(id="tu", name=name, input=dict(tool_input))
+    ).effect
+
+
+ALL_POLICIES = ["allow_all", "allow_write", "deny_all"]
+
+# host 默认档的判定矩阵（与实现同源，改行为必须同步改这里）
+_CASES = [
+    ("write_file", {"path": "a.txt", "content": "x"}, "write"),
+    ("edit_file", {"path": "a.txt", "old": "a", "new": "b"}, "write"),
+    ("read_file", {"path": "a.txt"}, "read"),
+]
+
+
+def test_allow_write_permits_write_and_read():
+    agent = _policy_agent("allow_write")
+    for name, inp, _ in _CASES:
+        assert _policy_effect(agent, name, **inp) == "allow", name
+
+
+def test_deny_all_denies_write_but_read_still_allowed():
+    """默认档：ask 一律拒。只读工具本就不询问，不受策略影响。"""
+    agent = _policy_agent("deny_all")
+    assert _policy_effect(agent, "write_file", path="a.txt", content="x") == "deny"
+    assert _policy_effect(agent, "edit_file", path="a.txt", old="a", new="b") == "deny"
+    # 只读工具本来就走 allow（不是 ask），策略不该把它拦下来
+    assert _policy_effect(agent, "read_file", path="a.txt") == "allow"
+
+
+def test_allow_readonly_is_not_a_policy():
+    """刻意不提供 allow_readonly：只读工具从不出现在 ask 里，该档等于 deny_all。
+
+    这条断言把「不要加这个冗余档」钉住，避免后人"补全"它。
+    """
+    from core.permissions.modes import UnattendedPolicy
+
+    assert not hasattr(UnattendedPolicy, "ALLOW_READONLY")
+    with pytest.raises(ValueError):
+        _policy_agent().set_unattended_policy("allow_readonly")
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_no_ask_escape_under_any_policy(policy):
+    """配了策略就不得残留 ask —— 无人环境里 ask 等于挂死。"""
+    agent = _policy_agent(policy)
+    for name, inp, _ in _CASES:
+        assert _policy_effect(agent, name, **inp) != "ask", f"{policy}/{name}"
+    assert _policy_effect(agent, "bash", command="ls") != "ask"
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_interactive_tools_denied_under_every_policy(policy):
+    """交互式工具在无人值守下一律拒绝（放行等于替人签字，且拿不到答案）。"""
+    agent = _policy_agent(policy)
+    assert _policy_effect(agent, "ExitPlanMode") == "deny"
+
+
+def test_no_policy_keeps_ask_semantics():
+    """不给策略 = 有人值守：写操作仍走 HITL，行为与改动前一致。"""
+    agent = _policy_agent(None)
+    assert _policy_effect(agent, "write_file", path="a.txt", content="x") == "ask"
+
+
+def test_policy_accepts_str_and_enum():
+    from core.permissions.modes import UnattendedPolicy
+
+    a = _policy_agent()
+    a.set_unattended_policy("allow_write")
+    assert a.unattended_policy is UnattendedPolicy.ALLOW_WRITE
+    a.set_unattended_policy(UnattendedPolicy.DENY_ALL)
+    assert a.unattended_policy is UnattendedPolicy.DENY_ALL
+    a.set_unattended_policy(None)
+    assert a.unattended_policy is None
+
+
+def test_invalid_policy_raises():
+    agent = _policy_agent()
+    with pytest.raises(ValueError):
+        agent.set_unattended_policy("allow_everything")
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_dangerous_command_denied_under_every_policy(policy):
+    """危险命令在任何无人值守档位下都必须 deny。
+
+    策略是"代答 ask"的机制，不能成为绕过危险命令黑名单的后门——
+    尤其 `allow_all` 这一档最容易被误读成"什么都能跑"。
+    无策略（有人值守）时同样是 deny，见既有 `test_dangerous_command_denied_in_every_mode`。
+    """
+    agent = _policy_agent(policy)
+    assert _policy_effect(agent, "bash", command="rm -rf /tmp/somewhere") == "deny"
+
+
+def test_allow_write_denies_non_safe_command():
+    """`allow_write` 放的是"读+写"，命令执行不在其中。
+
+    安全只读命令（ls）由既有规则引擎直接放行，与策略无关；
+    非安全命令走 ask → 被策略代答为 deny。
+    """
+    agent = _policy_agent("allow_write")
+    assert _policy_effect(agent, "bash", command="curl http://example.com") == "deny"
+    assert _policy_effect(agent, "bash", command="ls -la") == "allow"
