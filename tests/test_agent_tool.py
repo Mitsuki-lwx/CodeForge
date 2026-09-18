@@ -381,15 +381,22 @@ async def test_agent_tool_isolation_creates_worktree(tmp_path):
     assert str(tasks[0].sub_agent._exec_ctx.cwd) == str(wt_path)
 
 
-# ── 回归：Fork 子 Agent 创建时即自主（bypass），执行不卡 HITL ───────
+# ── 回归：Fork 子 Agent 自主干活，但不靠"无条件放行"实现 ─────────────
 
 
-def test_fork_subagent_is_autonomous_bypass(monkeypatch):
-    """fork 子 Agent 创建时 permission=BYPASS + dont_ask=True（对齐参考实现）。
+def test_fork_subagent_is_autonomous_without_bypass(monkeypatch):
+    """fork 子 Agent 自主干活，但**不再无条件 BYPASS**。
 
-    回归背景：多智能体实测中发现默认 fork 子 Agent permission_mode=DEFAULT，
-    其 write/bash 触发 HITL ask 而在 _hitl_event.wait() 上永远挂起、写不出文件。
+    历史背景：早期 fork 子 Agent 是 `permission_mode=DEFAULT`，其 write/bash
+    触发 HITL ask 后卡在 `_hitl_event.wait()` 永远挂起、写不出文件。当时的修法
+    是给它 `BYPASS` + `dont_ask=True` —— 但那让子 Agent 拿到**比父更大**的授权，
+    而且 BYPASS 会让决策直接落到 allow、绕开无人值守策略（D4）。
+
+    现在的修法：用无人值守策略代答 ask（**不再挂起**），授权按父推导 ——
+    父是默认模式且无显式策略时取 `allow_write`（能干活、命令仍拒）。
     """
+    from core.permissions.modes import PermissionMode as PM
+    from core.permissions.modes import UnattendedPolicy
     from core.tool.tools.agent_tool import AgentTool
 
     registry = _make_registry()
@@ -404,8 +411,9 @@ def test_fork_subagent_is_autonomous_bypass(monkeypatch):
 
     sub = tool._build_sub_agent(role, allowed, "main", is_fork=True)
 
-    assert sub.permission_mode.value == "bypassPermissions"
-    assert sub.dont_ask is True
+    assert sub.permission_mode is not PM.BYPASS, "不再无条件 BYPASS"
+    assert sub.dont_ask is False, "不再走『一律 allow』的老路"
+    assert sub.unattended_policy is UnattendedPolicy.ALLOW_WRITE
 
 
 def test_defined_role_subagent_keeps_own_permission():
@@ -578,3 +586,145 @@ async def test_foreground_normal_text_is_success(monkeypatch):
     )
     assert res.success is True
     assert res.data == "fixed calc.py"
+
+
+# ── 子 Agent 策略继承（D4）────────────────────────────────────────────
+#
+# 回归背景：fork 子 Agent 原先无条件 `permission_mode=BYPASS` + `dont_ask=True`
+# （理由是"自主干完、不逐工具 ask"）。那让子 Agent 拿到**比父更大**的授权，
+# 而且 BYPASS 会让决策直接落在 allow、根本进不到 ask —— 使无人值守策略形同虚设。
+# 改为：模式继承父 + 策略按父的授权范围推导（`resolve_child_policy`）。
+
+
+def _fork_child(parent):
+    from core.tool.tools.agent_tool import AgentTool
+
+    tool = AgentTool(catalog=None, task_mgr=None, bg_enabled=False)
+    tool.set_parent(parent)
+    return tool._build_sub_agent(
+        role=None, allowed=["write_file", "read_file"], session_id="main", is_fork=True
+    )
+
+
+def _write_effect(agent) -> str:
+    from llm.stream_events import ToolUse
+
+    return agent._check_tool_permission(
+        ToolUse(id="tu", name="write_file", input={"path": "a.txt", "content": "x"})
+    ).effect
+
+
+def test_fork_child_cannot_write_under_deny_all_parent():
+    """父设 deny_all → fork 子 Agent 不得写文件（checklist D4 的明文要求）。"""
+    from core.permissions.modes import UnattendedPolicy
+    from core.tool.tools import get_default_registry
+
+    parent = _make_parent_agent(get_default_registry())
+    parent.set_unattended_policy("deny_all")
+
+    sub = _fork_child(parent)
+
+    assert sub.unattended_policy is UnattendedPolicy.DENY_ALL
+    assert sub._dont_ask is False, "不再走『一律 allow』的老路"
+    assert _write_effect(sub) == "deny"
+
+
+def test_fork_child_aligns_with_bypass_parent():
+    """父在 BYPASS 全放行模式 → 子也全放行（授权对齐，不多也不少）。"""
+    from core.permissions.modes import PermissionMode as PM
+    from core.permissions.modes import UnattendedPolicy
+    from core.tool.tools import get_default_registry
+
+    parent = _make_parent_agent(get_default_registry())
+    parent.set_permission_mode(PM.BYPASS)
+
+    sub = _fork_child(parent)
+
+    assert sub.unattended_policy is UnattendedPolicy.ALLOW_ALL
+    assert _write_effect(sub) == "allow"
+
+
+def test_fork_child_gets_allow_write_when_parent_has_no_policy():
+    """父未设策略且在默认模式 → 子取 `allow_write`（能干活、命令仍拒）。
+
+    为什么不取 `deny_all`：父自己写文件也要经人批准，说明"写"是用户认可的意图，
+    子 Agent 无人可问时取 `allow_write` 最贴近它；而**命令执行仍拒**，
+    相对早先的无条件 BYPASS 是实打实的收紧。
+    """
+    from core.permissions.modes import UnattendedPolicy
+    from core.tool.tools import get_default_registry
+
+    parent = _make_parent_agent(get_default_registry())
+
+    sub = _fork_child(parent)
+
+    assert sub.unattended_policy is UnattendedPolicy.ALLOW_WRITE
+    assert _write_effect(sub) == "allow"
+
+
+def test_fork_child_no_longer_bypass_mode():
+    """fork 不再无条件 BYPASS —— 否则会绕过无人值守策略。"""
+    from core.permissions.modes import PermissionMode as PM
+    from core.tool.tools import get_default_registry
+
+    parent = _make_parent_agent(get_default_registry())
+    sub = _fork_child(parent)
+
+    assert sub.permission_mode is not PM.BYPASS
+
+
+def test_role_dontask_translated_to_allow_all_policy():
+    """角色的 `permissionMode: dontask` 契约（"ask 自动放行"）必须兑现。
+
+    做法是把该契约**翻译成策略** `allow_all`。若任由 `_dont_ask` 与策略并存，
+    由于策略在权限判定里优先，角色契约会静默失效 —— 这条把翻译关系钉住。
+    """
+    from core.permissions.modes import PermissionMode as PM
+    from core.permissions.modes import UnattendedPolicy
+    from core.tool.tools import get_default_registry
+    from core.tool.tools.agent_tool import AgentTool
+
+    class _Role:
+        permission_mode = PM.DEFAULT
+        dont_ask = True
+        max_turns = 5
+        system_prompt = ""
+
+    # 父是默认模式且未设策略 → 若走推导本会是 deny_all；角色的 dontask 应压过它
+    parent = _make_parent_agent(get_default_registry())
+
+    tool = AgentTool(catalog=None, task_mgr=None, bg_enabled=False)
+    tool.set_parent(parent)
+    sub = tool._build_sub_agent(
+        role=_Role(), allowed=["write_file"], session_id="main", is_fork=False
+    )
+
+    assert sub.unattended_policy is UnattendedPolicy.ALLOW_ALL
+    assert _write_effect(sub) == "allow", "角色声明 dontask ⇒ 写操作自动放行"
+
+
+def test_role_without_dontask_follows_parent_policy():
+    """未声明 dontask 的定义式角色子 Agent 按父的授权范围走（不再一律放行）。
+
+    父是默认模式 → 子取 `allow_write`：写放行、命令仍拒。
+    """
+    from core.permissions.modes import PermissionMode as PM
+    from core.permissions.modes import UnattendedPolicy
+    from core.tool.tools import get_default_registry
+    from core.tool.tools.agent_tool import AgentTool
+
+    class _Role:
+        permission_mode = PM.DEFAULT
+        dont_ask = False
+        max_turns = 5
+        system_prompt = ""
+
+    parent = _make_parent_agent(get_default_registry())
+
+    tool = AgentTool(catalog=None, task_mgr=None, bg_enabled=False)
+    tool.set_parent(parent)
+    sub = tool._build_sub_agent(
+        role=_Role(), allowed=["write_file"], session_id="main", is_fork=False
+    )
+
+    assert sub.unattended_policy is UnattendedPolicy.ALLOW_WRITE

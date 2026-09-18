@@ -433,7 +433,11 @@ class AgentTool(Tool):
         from core.agent.config import AgentConfig
         from core.agent.runtime import SessionRuntime
         from core.context_compression.state import new_session_context
-        from core.permissions.modes import PermissionMode
+        from core.permissions.modes import (
+            PermissionMode,
+            UnattendedPolicy,
+            resolve_child_policy,
+        )
         from core.tool.context import ExecutionContext
 
         parent = self._parent
@@ -442,16 +446,30 @@ class AgentTool(Tool):
 
         # 子 Agent 配置
         max_turns = int(getattr(role, "max_turns", 0))
-        # Fork 子 Agent：创建时就定成自主执行（permission=bypass）——fork 继承父全工具
-        # 又要自主干完，执行时不该逐工具 ask（对齐参考实现 mewcode 的 fork
-        # `permission_mode="bypassPermissions"`；消除子 Agent 写文件卡在 HITL ask 挂起）。
-        # 定义式角色子 Agent 尊重其角色声明的权限模式。
+        # Fork 子 Agent：原先无条件给 `BYPASS` + `dont_ask=True`（"自主执行、
+        # 不逐工具 ask"），理由是消除子 Agent 写文件卡在 HITL ask 挂起。
+        # 但那让子 Agent 拿到**比父更大**的授权，而且 BYPASS 会让决策直接落在
+        # allow、根本进不到 ask，使无人值守策略形同虚设（D4）。
+        # 改为：模式继承父，策略由 `resolve_child_policy` 按父的授权范围推导 ——
+        # 依旧不需要人按键（不会挂起），但不会越权。
+        # 定义式角色子 Agent 尊重其角色声明的权限模式（该契约不变）。
         if is_fork:
-            permission_mode = PermissionMode.BYPASS
-            dont_ask = True
+            permission_mode = getattr(
+                parent, "permission_mode", PermissionMode.DEFAULT
+            )
+            dont_ask = False
+            child_policy = resolve_child_policy(parent)
         else:
             permission_mode = getattr(role, "permission_mode", PermissionMode.DEFAULT)
             dont_ask = bool(getattr(role, "dont_ask", False))
+            # 角色显式声明 `permissionMode: dontask`（语义是"ask 自动放行"）时，
+            # 把它**翻译成策略** `allow_all`，而不是让 `_dont_ask` 与策略两套
+            # 机制并存 —— 策略在权限判定里优先，并存会让角色契约静默失效。
+            child_policy = (
+                UnattendedPolicy.ALLOW_ALL
+                if dont_ask
+                else resolve_child_policy(parent)
+            )
         system_prompt = str(getattr(role, "system_prompt", ""))
 
         # 工作目录：隔离时用 worktree 路径，否则用父的 workdir
@@ -548,6 +566,9 @@ class AgentTool(Tool):
             hooks=getattr(parent, "_hooks", None),
             loop=getattr(parent, "_loop", None),  # 子 agent 继承父 loop（spec_loop）
         )
+        # 子 Agent 没有 TUI 接 HITL，靠无人值守策略代答 ask；授权范围继承父，
+        # 角色显式 `dontask` 时按 `allow_all` 兑现该契约（D4）
+        sub_agent.set_unattended_policy(child_policy)
         # 可读身份名注入（span 归属 `codeforge.agent.name`）
         if name:
             sub_agent.set_agent_name(name)

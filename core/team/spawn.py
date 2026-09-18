@@ -2,7 +2,9 @@
 
 复用 `_build_sub_agent` 类似的子 Agent 构造，但：
 - 用 `build_teammate_tools` 生成队友专用工具集（team-bound 协作工具）。
-- 强制 `dont_ask=True`（队友无 TUI 接 ApprovalRequest，F39a）。
+- 无人值守策略**继承父 Agent**（队友没有 TUI 接 ApprovalRequest，所以要靠策略
+  代答 ask 才不会挂起；但授权范围不得大于父 —— 早先是强制 `dont_ask=True`，
+  等于"没人按键就自己升级成全放行"，已按 D4 修掉）。
 - 注入 `<team-context>` system reminder（F40）。
 - 按后端分流：in-process 走 task_mgr.launch；pane 后端把 initial_prompt 预写 mailbox 后 spawn。
 """
@@ -90,7 +92,7 @@ async def spawn_teammate(
         backend_type=backend.value,
     )
 
-    # ---- 4. 构造子 Agent + Conv（强制 dont_ask=True）----
+    # ---- 4. 构造子 Agent + Conv（无人值守策略继承父，见 _build_teammate_agent）----
     sub_agent = _build_teammate_agent(
         manager=manager,
         parent_agent=parent_agent,
@@ -224,14 +226,14 @@ def _build_teammate_agent(
     worktree_path: str,
     system_prompt_extra: str,
 ) -> Any:
-    """构造队友 Agent（dont_ask=True + team-bound 工具 registry）。"""
+    """构造队友 Agent（无人值守策略继承父 + team-bound 工具 registry）。"""
     from pathlib import Path
 
     from core.agent.agent import Agent
     from core.agent.config import AgentConfig
     from core.agent.runtime import SessionRuntime
     from core.context_compression.state import new_session_context
-    from core.permissions.modes import PermissionMode
+    from core.permissions.modes import PermissionMode, resolve_child_policy
     from core.tool.context import ExecutionContext
     from core.tool.registry import ToolRegistry
 
@@ -266,10 +268,14 @@ def _build_teammate_agent(
         runtime=sub_runtime,
         system_prompt=system_prompt_extra or None,
         max_turns=25,
-        permission_mode=PermissionMode.DEFAULT,
-        dont_ask=True,  # F39a：队友无 TUI 接 ApprovalRequest
+        # 队友没有 TUI 接 ApprovalRequest，所以要靠无人值守策略代答 ask；
+        # 但授权范围必须对齐父 Agent —— 不能因为"没人按键"就自己升级成
+        # 全放行（D4）。模式继承父，策略由 resolve_child_policy 推导。
+        permission_mode=getattr(parent, "permission_mode", PermissionMode.DEFAULT),
+        dont_ask=False,
         hooks=getattr(parent, "_hooks", None),
     )
+    sub_agent.set_unattended_policy(resolve_child_policy(parent))
     return sub_agent
 
 

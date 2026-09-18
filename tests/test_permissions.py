@@ -379,3 +379,52 @@ def test_allow_write_denies_non_safe_command():
     agent = _policy_agent("allow_write")
     assert _policy_effect(agent, "bash", command="curl http://example.com") == "deny"
     assert _policy_effect(agent, "bash", command="ls -la") == "allow"
+
+
+# ── 子 Agent 策略继承的推导规则（D4）──────────────────────────────────
+#
+# 子 Agent 没有 TUI 接 HITL，必须由策略代答 ask 才不会挂起；但授权范围
+# 不得大于父。这两条断言把规则钉住。
+
+
+def test_child_policy_prefers_parent_explicit_policy():
+    """父显式设过策略（host 场景）→ 原样继承，不被父的 permission_mode 拉偏。"""
+    from core.permissions.modes import UnattendedPolicy, resolve_child_policy
+
+    class _Parent:
+        unattended_policy = UnattendedPolicy.ALLOW_WRITE
+        permission_mode = PermissionMode.BYPASS  # 故意不一致：显式策略优先
+
+    assert resolve_child_policy(_Parent()) is UnattendedPolicy.ALLOW_WRITE
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (PermissionMode.BYPASS, "allow_all"),
+        (PermissionMode.ACCEPT_EDITS, "allow_write"),
+        # DEFAULT：父自己写文件也要经人批准 → 说明"写"是用户认可的意图，
+        # 子 Agent 无人可问，取 allow_write（命令仍拒），比早先无条件 BYPASS 收敛
+        (PermissionMode.DEFAULT, "allow_write"),
+        (PermissionMode.PLAN, "deny_all"),
+    ],
+)
+def test_child_policy_derived_from_parent_mode(mode, expected):
+    """父未设策略时按父的权限模式推导 —— 授权对齐，不多不少。"""
+    from core.permissions.modes import resolve_child_policy
+
+    class _Parent:
+        unattended_policy = None
+        permission_mode = mode
+
+    assert resolve_child_policy(_Parent()).value == expected
+
+
+def test_child_policy_falls_back_to_deny_all_on_unknown_parent():
+    """取不到父的模式时退回最保守档（宁可少授权）。"""
+    from core.permissions.modes import resolve_child_policy
+
+    class _Parent:
+        pass
+
+    assert resolve_child_policy(_Parent()).value == "deny_all"
