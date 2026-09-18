@@ -45,6 +45,25 @@ def _normalize_usage(usage: dict | None) -> dict | None:
     }
 
 
+def _drain_pending_tools(pending: dict[int, dict]) -> list[ToolUse]:
+    """取出并清空累积中的工具调用（天然幂等：清空后再调返回空表）。
+
+    放在模块级而非内联，是因为它要在两处使用：finish_reason 收尾与 [DONE] 兜底。
+    清空动作保证「上游重复给出结束信号」时不会重复发射同一个工具调用。
+    """
+    out: list[ToolUse] = []
+    for idx in sorted(pending.keys()):
+        pt = pending[idx]
+        raw_args = "".join(pt["args_parts"])
+        try:
+            parsed = json.loads(raw_args) if raw_args else {}
+        except json.JSONDecodeError:
+            parsed = {}
+        out.append(ToolUse(id=pt["id"], name=pt["name"], input=parsed))
+    pending.clear()
+    return out
+
+
 def _as_text_blocks(text: str) -> list[dict]:
     """非空文本 → OpenAI 内容块数组；空文本 → 空数组。
 
@@ -185,6 +204,10 @@ class OpenAIConversationAdapter(Adapter):
 
             raw = line.removeprefix("data: ")
             if raw.strip() == "[DONE]":
+                # 兜底：个别上游全程不给非空 finish_reason（只在 [DONE] 收尾），
+                # 此处把仍累积着的工具调用补发出来，否则会静默丢失。
+                for ev in _drain_pending_tools(pending_tools):
+                    yield ev
                 yield CompletionDone(
                     usage=_normalize_usage(usage),
                     cache_read_input_tokens=cached_tokens,
@@ -231,16 +254,15 @@ class OpenAIConversationAdapter(Adapter):
                     pending_tools[idx]["args_parts"].append(func["arguments"])
 
             finish_reason = choices[0].get("finish_reason")
-            if finish_reason is not None:
-                # Emit accumulated tool calls
-                for idx in sorted(pending_tools.keys()):
-                    pt = pending_tools[idx]
-                    raw_args = "".join(pt["args_parts"])
-                    try:
-                        parsed = json.loads(raw_args) if raw_args else {}
-                    except json.JSONDecodeError:
-                        parsed = {}
-                    yield ToolUse(id=pt["id"], name=pt["name"], input=parsed)
+            # 只认「非空」finish_reason 为流结束。
+            # 标准 OpenAI 用 null 表示"还在流中"，但部分兼容上游（实测 SenseNova）
+            # 把未结束填成空字符串 ""。若按 `is not None` 判定，累积途中每个 chunk
+            # 都会触发一次发射——实测一次工具调用被发成 9 个 ToolUse，前几个 input
+            # 还是空 {}，上层据此会重复执行工具（写文件场景 = 重复落盘）。
+            # _drain_pending_tools 自带清空，多 chunk 重复来到也不会重复发射。
+            if finish_reason:
+                for ev in _drain_pending_tools(pending_tools):
+                    yield ev
 
                 if chunk.get("usage"):
                     usage = chunk["usage"]

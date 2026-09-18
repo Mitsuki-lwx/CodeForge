@@ -32,10 +32,29 @@ class RawResponse:
         status_code: int,
         error_message: str = "",
         error_code: str = "",
+        retry_after: float | None = None,
     ) -> None:
         self.status_code = status_code
         self.error_message = error_message
         self.error_code = error_code
+        # 上游显式告知的等待秒数（`Retry-After` 头）。限流类 429 的上游多半会给，
+        # 给了就必须照办——自己猜退避往往偏短，会一路撞到重试耗尽。
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """解析 `Retry-After`（秒数形式）。
+
+    HTTP 允许两种形式：秒数（"120"）或 HTTP-date。后者极少见且需要时钟对齐，
+    这里只认秒数，其余返回 None 让调用方退回指数退避。
+    """
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
 
 
 def _extract_error(body: bytes) -> tuple[str, str]:
@@ -61,26 +80,29 @@ async def post_stream(
     Yields:
         首项 RawResponse（状态/错误）；200 后逐行 yield 原始 SSE 行字符串。
     """
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", url, headers=headers, json=body) as response:
-            if response.status_code != 200:
-                error_body = await response.aread()
-                message, code = _extract_error(error_body)
-                yield RawResponse(
-                    response.status_code,
-                    error_message=message,
-                    error_code=code,
-                )
-                return
-            yield RawResponse(response.status_code)
-            # 显式持有内层 aiter_lines 生成器，而不是直接 `async for`：
-            # 中途被关闭（GeneratorExit/取消）时，先在 finally 里关掉它，
-            # 级联关闭底层 httpx 流，避免 async with 退出时 response.aclose()
-            # 撞上仍挂在迭代上的内层生成器（RuntimeError: already running）。
-            lines = response.aiter_lines()
-            try:
-                async for line in lines:
-                    yield line
-            finally:
-                with suppress(RuntimeError):
-                    await lines.aclose()
+    async with (
+        httpx.AsyncClient(timeout=timeout) as client,
+        client.stream("POST", url, headers=headers, json=body) as response,
+    ):
+        if response.status_code != 200:
+            error_body = await response.aread()
+            message, code = _extract_error(error_body)
+            yield RawResponse(
+                response.status_code,
+                error_message=message,
+                error_code=code,
+                retry_after=_parse_retry_after(response.headers.get("retry-after")),
+            )
+            return
+        yield RawResponse(response.status_code)
+        # 显式持有内层 aiter_lines 生成器，而不是直接 `async for`：
+        # 中途被关闭（GeneratorExit/取消）时，先在 finally 里关掉它，
+        # 级联关闭底层 httpx 流，避免 async with 退出时 response.aclose()
+        # 撞上仍挂在迭代上的内层生成器（RuntimeError: already running）。
+        lines = response.aiter_lines()
+        try:
+            async for line in lines:
+                yield line
+        finally:
+            with suppress(RuntimeError):
+                await lines.aclose()
