@@ -18,7 +18,7 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 
-from config.loader import load_config
+from config.loader import load_config, load_host_config
 from config.model import ProviderConfig
 from conversation.manager import ConversationManager
 from core.agent import Agent
@@ -1010,8 +1010,41 @@ async def _handle_hitl(
     agent.resolve_hitl(event.tool_use_id, allowed, response.choice.value)
 
 
-def run(task: str = "", loop: str = "") -> None:
+def run(task: str = "", loop: str = "", host: bool | None = None) -> None:
+    """启动 TUI；`host` 打开时改为 host 客户端模式。
+
+    `host` 为 `None` 表示"没显式指定"→ 取 `features.host.enabled`（默认关）。
+    """
     providers = load_config("config.yaml")
+
+    # 默认路径（host 关）行为与引入本开关之前完全一致：下面只多读一次配置，
+    # 不影响 provider 选择、装配与交互循环的任何一步。
+    host_cfg = load_host_config("config.yaml")
+    requested = host_cfg.enabled if host is None else host
+
+    if requested and not task:
+        # 客户端模式下 TUI 不装配会话——装配了就会和 host 抢同一个 agent 与单写者锁。
+        # 因此这里也**不做**交互式 provider 选择：provider 只在内嵌回落时才用得上，
+        # 而 host 本来就是无人值守入口，挑 provider 不该发生在连上之前。
+        from tui.host_mode import run_host_mode
+
+        try:
+            asyncio.run(
+                run_host_mode(
+                    providers=providers,
+                    policy=host_cfg.unattended_policy,
+                    port=host_cfg.port,
+                )
+            )
+        except KeyboardInterrupt:
+            print("\nBye!")
+        return
+
+    if requested:
+        # 无头单任务没有"要保住的会话"，而把它架在 loopback 上会让每条 E2E / 基准
+        # 测试都依赖一个监听套接字。明确说一句，别让 `--host` 看起来生效了其实没有。
+        print("提示：host 模式不适用于 --task（无头单任务），本次走原路径。")
+
     # 无头单任务模式：跳过交互式方向键选择，取第一个配置的 provider
     provider = providers[0] if task else select_provider(providers)
     try:

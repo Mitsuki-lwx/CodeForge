@@ -191,3 +191,31 @@ def _default_features():
     from config.model import FeaturesConfig
 
     return FeaturesConfig()
+
+
+def load_host_config(path: str | Path = "config.yaml"):
+    """读 `features.host`，**永不抛异常**：读不出来就返回默认档（`HostConfig()`）。
+
+    默认档即「全关 + `deny_all` + 随机端口」，所以调用方拿到默认值等于「没配 host」，
+    不需要再判 `None`。两个调用点（`main.py` 的 host 子命令、`tui/host_mode.py` 的
+    内嵌回落）共用这一处，避免两边各写一份默认档位、日后漂移。
+
+    配置读不出来时只告警不阻断：host 起不来通常比「用默认档起来」更糟——这与
+    `_parse_host_config` 对非法档位的取舍一致。
+    """
+    from config.model import HostConfig
+
+    host = None
+    try:
+        _, features = load_config_full(path)
+        host = getattr(features, "host", None)
+    except SystemExit:
+        # 配置文件本身不合法时 `load_config_full` 会经 `load_config` 直接退出（既有
+        # 严格行为，主流程靠它给出明确错误）。本函数的契约只是"回答 host 段"，不该由
+        # 它决定进程去死，所以也接住——按默认档（关）处理，真正的错误由主流程报。
+        print(
+            "警告：配置文件不合法，features.host 按默认档（关）处理。", file=sys.stderr
+        )
+    except Exception as e:  # noqa: BLE001 —— 配置问题不该让 host 起不来
+        print(f"警告：读取 features.host 失败（{e}），按默认档处理。", file=sys.stderr)
+    return host if isinstance(host, HostConfig) else HostConfig()

@@ -182,6 +182,12 @@ class HostServer:
 
     @property
     def run(self) -> RunRecord:
+        """本 host 的 run 记录。
+
+        **这是 `create()` 那一刻的快照**，`start()` 把它推进到 `running`、收尾把它落成
+        终态，都不会反映到这里。要看当前状态请 `RunStore.get(self.run.id)`（`_settle`
+        就是这么做的）。`id` / `session_id` / `workspace` 这些不变字段随便读。
+        """
         return self._run
 
     @property

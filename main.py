@@ -73,6 +73,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="host 子命令：监听端口（0 = 随机）。省略时取 features.host.port。",
     )
+    p.add_argument(
+        "--host",
+        dest="host",
+        action="store_true",
+        default=None,
+        help=(
+            "TUI 以客户端模式启动：连本工作区正在跑的 host（连不上则在本进程内嵌一个）。"
+            "省略时取 features.host.enabled（默认关）。对 --task 无效。"
+        ),
+    )
+    p.add_argument(
+        "--no-host",
+        dest="host",
+        action="store_false",
+        help="强制关掉 host 模式，即使 features.host.enabled 为 true。",
+    )
     return p.parse_args(argv)
 
 
@@ -294,24 +310,15 @@ def _cmd_attach(args: argparse.Namespace) -> int:
 def _resolve_host_settings(args: argparse.Namespace) -> tuple[str, int]:
     """算出 host 的 (无人值守策略, 端口)：CLI 显式传的优先，否则取 config。
 
-    配置读不出来时**不拦住 host** —— 退回安全默认（`deny_all` + 随机端口），
-    并把原因打到 stderr。host 起不来通常比"用默认档起来"更糟。
+    读取与默认档都在 `config.loader.load_host_config`（不抛异常，读不出来给默认档），
+    TUI 的内嵌回落走同一处，避免两处默认值漂移。
     """
-    cfg_policy, cfg_port = "deny_all", 0
-    try:
-        from config.loader import load_config_full
+    from config.loader import load_host_config
 
-        _, features = load_config_full("config.yaml")
-        host_cfg = getattr(features, "host", None)
-        if host_cfg is not None:
-            cfg_policy = getattr(host_cfg, "unattended_policy", "") or cfg_policy
-            cfg_port = int(getattr(host_cfg, "port", 0) or 0)
-    except Exception as e:  # noqa: BLE001 —— 配置问题不该让 host 起不来
-        print(f"警告：读取 features.host 失败（{e}），按默认档启动。", file=sys.stderr)
-
-    policy = getattr(args, "unattended_policy", None) or cfg_policy
+    cfg = load_host_config("config.yaml")
+    policy = getattr(args, "unattended_policy", None) or cfg.unattended_policy
     port_arg = getattr(args, "port", None)
-    port = cfg_port if port_arg is None else int(port_arg)
+    port = int(cfg.port) if port_arg is None else int(port_arg)
     return policy, port
 
 
@@ -412,7 +419,7 @@ def main() -> None:
 
     from tui.app import run
 
-    run(task=args.task, loop=args.loop)
+    run(task=args.task, loop=args.loop, host=args.host)
 
 
 if __name__ == "__main__":
