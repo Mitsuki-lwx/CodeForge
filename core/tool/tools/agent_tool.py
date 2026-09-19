@@ -510,6 +510,9 @@ class AgentTool(Tool):
         sub_exec_ctx = ExecutionContext(
             cwd=work_cwd,
             session_id=f"{session_id}-sub",
+            # 继承父的进度汇：嵌套派发时各层往同一处写，界面读到的永远是
+            # "当前最内层在做什么"。父没挂汇（如单测）时为 None，即不采集。
+            progress=getattr(getattr(parent, "_exec_ctx", None), "progress", None),
         )
 
         # 隔离时注入 worktree 路径说明到 system prompt

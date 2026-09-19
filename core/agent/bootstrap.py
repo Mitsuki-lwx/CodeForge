@@ -42,7 +42,7 @@ from core.notes.state import SessionStateStore
 from core.skills import SkillExecutor, SkillLoader
 from core.task.manager import BackgroundTaskManager
 from core.task.tools import SendMessageTool, TaskGetTool, TaskListTool, TaskStopTool
-from core.tool.context import ExecutionContext
+from core.tool.context import ExecutionContext, ProgressSink
 from core.tool.tools import get_default_registry
 from core.tool.tools.agent_tool import AgentTool
 from core.tool.tools.install_skill import InstallSkillTool
@@ -271,7 +271,15 @@ async def build_session(
     # ── 核心运行时 ──
     client = LLMClient.create(provider)
     registry = get_default_registry()
-    exec_ctx = ExecutionContext(cwd=ws, session_id=MAIN_AGENT_ID)
+    exec_ctx = ExecutionContext(
+        cwd=ws,
+        session_id=MAIN_AGENT_ID,
+        # 进度汇：子 Agent 往里写「谁在做什么」，界面在长时间静默时来读，
+        # 好把「仍在等待模型响应」这句（在跑子 Agent 时是误导）换成人话。
+        # 挂在这里而不是 TUI 侧：装配是唯一入口，fork / 队友 / 嵌套子 Agent
+        # 都从这里继承同一个汇，不必各自接线。
+        progress=ProgressSink(),
+    )
     agent_config = AgentConfig(max_iterations=25)
 
     # ── Hook 系统（两级 YAML 加载，错误不阻断启动）──

@@ -48,11 +48,12 @@ class ReactLoop(AgentLoop):
     async def run_to_completion(
         self, agent: Any, conv: Any, task: str = "", events: Any = None
     ) -> str:
-        from core.agent.sub_agent import _cleanup_worktree, _run_loop
+        from core.agent.sub_agent import _cleanup_worktree, _clear_progress, _run_loop
 
         try:
             return await _run_loop(agent, conv, task, events)
         finally:
+            _clear_progress(agent)
             _cleanup_worktree(agent)
 
 

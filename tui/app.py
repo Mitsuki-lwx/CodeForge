@@ -819,6 +819,28 @@ async def _inject_and_run(
     console.print("[dim]---[/]\n")
 
 
+def _progress_hint(app: CodeForgeApp) -> str:
+    """看门狗静默时说明「在等谁、等什么」，而不是笼统说"等模型响应"。
+
+    父 Agent 执行工具（含子 Agent）期间自己的事件流是静默的 —— 生成器挂在
+    `await` 上、不能 yield（结构性事实，实测确认过）。所以这里**主动去读**
+    子 Agent 留下的进度记录（`core/tool/context.ProgressSink`）；读不到就退回原说法。
+
+    实测踩过的误导：派了子 Agent 之后界面一直显示"仍在等待模型响应"，
+    让人以为上游卡住，实际是子 Agent 在跑。
+    """
+    ctx = getattr(getattr(app, "agent", None), "_exec_ctx", None)
+    sink = getattr(ctx, "progress", None)
+    note = sink.snapshot() if sink is not None else None
+    if note is None:
+        return "模型响应"
+    who = f"子 Agent「{note.agent}」" if note.agent else "子 Agent"
+    what = note.action or "工作中"
+    if note.detail:
+        what = f"{what} {note.detail}"
+    return f"{who}（{what}）"
+
+
 async def _consume_agent_stream(
     app: CodeForgeApp,
     event_gen: AsyncGenerator[AgentEvent, None],
@@ -861,14 +883,17 @@ async def _consume_agent_stream(
                 if now - last_heartbeat_at >= stall_heartbeat:
                     waited = now - last_event_at
                     total = now - start
+                    # 说清在等谁：跑子 Agent 期间等待的不是模型
+                    hint = _progress_hint(app)
                     console.print(
-                        f"[dim]… 仍在等待模型响应 (已静默 {waited:.0f}s, "
+                        f"[dim]… 仍在等待{hint} (已静默 {waited:.0f}s, "
                         f"累计 {total:.0f}s)…[/]"
                     )
                     if waited >= stall_warn_at:
                         console.print(
-                            f"[yellow]⚠ 模型响应长期无进展 ({waited:.0f}s)。"
-                            f"可能网络中断/提供商卡住。Ctrl-C 取消。[/]"
+                            f"[yellow]⚠ {hint} 长期无进展 ({waited:.0f}s)。"
+                            f"可能网络中断 / 上游卡住 / 子 Agent 卡在某个工具上。"
+                            f"Ctrl-C 取消。[/]"
                         )
                     last_heartbeat_at = now
                 continue

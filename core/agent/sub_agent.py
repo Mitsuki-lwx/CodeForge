@@ -38,6 +38,24 @@ from llm.stream_events import (
 logger = logging.getLogger(__name__)
 
 
+def _progress(agent: Any, action: str, detail: str = "") -> None:
+    """往进度汇写一条「谁在做什么」；没挂汇时是 no-op。
+
+    用途见 `core/tool/context.ProgressSink`：父 Agent 在 `await` 子 Agent 时自己的
+    事件流是静默的，子 Agent 的进度只能由界面**主动来读**——这份记录就是给它读的。
+    """
+    sink = getattr(getattr(agent, "_exec_ctx", None), "progress", None)
+    if sink is not None:
+        sink.note(getattr(agent, "_agent_name", None) or "sub", action, detail)
+
+
+def _clear_progress(agent: Any) -> None:
+    """子 Agent 收尾时清空；否则父回到"等模型响应"时，界面还显示子 Agent 的旧状态。"""
+    sink = getattr(getattr(agent, "_exec_ctx", None), "progress", None)
+    if sink is not None:
+        sink.clear()
+
+
 async def run_to_completion(
     agent: Any,  # Agent 实例（避免循环导入）
     conv: ConversationManager,
@@ -73,6 +91,7 @@ async def run_to_completion(
     try:
         return await _run_loop(agent, conv, task, events)
     finally:
+        _clear_progress(agent)
         # ── 隔离 worktree 清理：子 Agent 结束（含取消/异常）时触发 ──
         _cleanup_worktree(agent)
 
@@ -157,6 +176,7 @@ async def _run_loop(
             # 稳定/变化块分离走 system_blocks，adapter 打 cache_control 断点命中缓存
             sys_kwargs = {"system_blocks": assembly}
 
+        _progress(agent, "等模型响应")
         stream_msg = conv.start_assistant_stream()
         tool_uses: list[ToolUse] = []
         unknown_count = 0
@@ -236,6 +256,7 @@ async def _run_loop(
             return last_text or _get_last_assistant_text(conv)
 
         # ── 执行工具 ──
+        _progress(agent, "调工具", ", ".join(t.name for t in tool_uses))
         if events is not None:
             try:
                 events.put_nowait(("tools_start", len(tool_uses)))

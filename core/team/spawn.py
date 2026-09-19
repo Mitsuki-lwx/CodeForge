@@ -260,7 +260,12 @@ def _build_teammate_agent(
     sub_agent = Agent(
         registry=sub_registry,
         llm_client=getattr(parent, "_client", None),
-        exec_ctx=ExecutionContext(cwd=work_cwd),
+        exec_ctx=ExecutionContext(
+            cwd=work_cwd,
+            # 队友同样继承父的进度汇（与 fork 子 Agent 同一处理）：
+            # 界面在长时间静默时能说明是哪个队友、在做什么。
+            progress=getattr(getattr(parent, "_exec_ctx", None), "progress", None),
+        ),
         conversation=__import__(
             "conversation.manager", fromlist=["ConversationManager"]
         ).ConversationManager(),
