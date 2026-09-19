@@ -179,10 +179,21 @@ def _parse_host_config(raw: dict) -> object:
         )
         port = 0
 
+    token_file = str(raw.get("token_file", "") or "").strip()
+    if token_file:
+        # 静默忽略一个**安全相关**配置是最糟的：用户会以为凭据已经挪出项目目录，
+        # 实际仍写在 <workspace>/.codeforge/host.token。宁可明确说一句"没生效"。
+        print(
+            "警告：features.host.token_file 尚未生效，控制通道凭据仍写在 "
+            "<workspace>/.codeforge/host.token；该配置当前不产生任何效果"
+            "（会合信息 host.json 同样固定在 .codeforge/ 下，只挪凭据会让两者分处两地）。",
+            file=sys.stderr,
+        )
+
     return HostConfig(
         enabled=bool(raw.get("enabled", False)),
         port=port,
-        token_file=str(raw.get("token_file", "") or ""),
+        token_file=token_file,
         unattended_policy=policy,
     )
 
