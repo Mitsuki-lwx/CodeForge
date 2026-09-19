@@ -12,12 +12,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 from config.model import ProviderConfig
 from conversation.message import Message, MessageRole, MessageStatus
+from core.archive import read_unpaired_tool_uses
 from core.archive.reader import restore_session
 from core.archive.writer import Writer
 from core.host.journal import SideEffectJournal, read_journal
@@ -267,3 +269,61 @@ def test_pending_preserves_journal_order(tmp_path, tid):
         tmp_path, [_tool_use("t1"), _tool_use("t2")]
     )
     assert [p.tool_use_id for p in pending] == ["t1", "t2"]
+
+
+# ── 只读取数（`read_unpaired_tool_uses`）──────────────────────────────
+#
+# `codeforge attach` 只看一眼状态，却会读**不是当前活跃 run** 的会话。
+# 那条路径必须只读：`restore_session` 在超限压缩时会把 JSONL 整体重写
+# （见其末尾的 `_persist_compact`），"看一眼就改写别人的会话文件"不可接受。
+# 下面第一条断言就是这条契约本身。
+
+
+def _conversation_bytes(session_dir) -> bytes:
+    return (session_dir / "conversation.jsonl").read_bytes()
+
+
+def test_read_unpaired_does_not_touch_the_file(tmp_path):
+    """核心契约：读一次不得改写会话文件（逐字节比对，不是"内容等价"）。"""
+    _write_conversation(tmp_path, [_user("hi"), _tool_use("t1")])
+    before = _conversation_bytes(tmp_path)
+    mtime_before = (tmp_path / "conversation.jsonl").stat().st_mtime_ns
+
+    msgs = read_unpaired_tool_uses(tmp_path)
+
+    assert _conversation_bytes(tmp_path) == before, "文件内容被改写了"
+    assert (tmp_path / "conversation.jsonl").stat().st_mtime_ns == mtime_before
+    assert [m.tool_use_id for m in msgs] == ["t1"]
+
+
+def test_read_unpaired_matches_restore_session_result(tmp_path):
+    """与 `restore_session` 的判定必须一致——两条路径分叉会让人对不上账。"""
+    _write_conversation(
+        tmp_path, [_user("hi"), _tool_use("t1"), _tool_use("t2"), _tool_result("t1")]
+    )
+
+    direct = read_unpaired_tool_uses(tmp_path)
+    via_restore = asyncio.run(_restore(tmp_path)).unpaired_tool_uses
+
+    assert [m.tool_use_id for m in direct] == [m.tool_use_id for m in via_restore]
+
+
+def test_read_unpaired_on_complete_conversation_is_empty(tmp_path):
+    _write_conversation(tmp_path, [_user("hi"), _tool_use("t1"), _tool_result("t1")])
+    assert read_unpaired_tool_uses(tmp_path) == []
+
+
+def test_read_unpaired_missing_file_returns_empty(tmp_path):
+    """会话文件不存在 → 空列表，不抛。attach 的主职责是看状态，不该被判失败。"""
+    assert read_unpaired_tool_uses(tmp_path / "nope") == []
+
+
+def test_read_unpaired_chains_into_pending_confirmations(tmp_path):
+    """两个来源交叉：未配对 × journal 同 id 命中 → 才报「可能已生效」。"""
+    _write_conversation(tmp_path, [_user("hi"), _tool_use("t1")])
+    _journal_with(tmp_path, ["t1"])
+
+    pending = find_pending_confirmations(tmp_path, read_unpaired_tool_uses(tmp_path))
+
+    assert [p.tool_use_id for p in pending] == ["t1"]
+    assert pending[0].tool_name == "write_file"

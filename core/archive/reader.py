@@ -132,6 +132,23 @@ def _unpaired_tool_use_indices(msgs: list[Message]) -> list[int]:
     ]
 
 
+def read_unpaired_tool_uses(session_dir: str | Path) -> list[Message]:
+    """只读地取出「发起过、但从未落盘结果」的工具调用。
+
+    与 `restore_session` 的分工：这里**不**建 `ConversationManager`、不压缩、**不写回
+    任何东西**。`codeforge attach` 要的只是"报给用户看"，那条路径绝不能因为看一眼就
+    改写别人的会话文件（`restore_session` 在压缩时会把 JSONL 整体重写，见
+    `_persist_compact`）。
+
+    恢复语义的入口：把返回值交给 `core.host.recovery.find_pending_confirmations()`，
+    就能交叉出「可能已经生效但结果没落盘」的副作用调用。
+    """
+    msgs, _skipped, _ts = read_messages(
+        Path(session_dir) / CONVERSATION_FILENAME
+    )
+    return [msgs[i] for i in _unpaired_tool_use_indices(msgs)]
+
+
 def _truncate_dangling_tool_use(msgs: list[Message]) -> list[Message]:
     """把「未配对的工具调用」所在的那一整批调用连同其后内容截掉。
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -156,6 +157,65 @@ def _read_journal_tail(session_dir: Path, limit: int = 5) -> list:
     return entries[-limit:]
 
 
+@dataclass
+class _PendingEffect:
+    """attach 要展示的一条待确认副作用：journal 的判定 + 调用参数。
+
+    `summary` 来自 journal，存的是**工具返回内容**——写类工具成功时常常是空串
+    （实测 `write_file` 就是，它的返回内容为空），只报它会得到
+    「- write_file: 」这种不含任何信息的告警。真正有用的是**调用参数**
+    （写的是哪个文件、跑的是什么命令），所以从会话里一并带出来。
+    """
+
+    tool_use_id: str
+    tool_name: str
+    summary: str
+    tool_input: dict
+
+
+# 参数里最能说明"影响面"的键，按优先级取第一个有值的
+_INPUT_HINT_KEYS = ("file_path", "path", "command", "pattern", "url", "query")
+
+
+def _input_hint(tool_input: dict) -> str:
+    """从调用参数里挑一句「改了哪里」；挑不到返回空串（调用方据此省略冒号）。"""
+    for key in _INPUT_HINT_KEYS:
+        value = tool_input.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _pending_confirmations(session_dir: Path) -> list[_PendingEffect]:
+    """列出「可能已经生效、但结果没落盘」的副作用调用（spec 的恢复语义）。
+
+    判据是**交叉**两个来源：会话里未配对的 `tool_use` × journal 里同 id 的记录。
+    只有两边都命中才报警——单看 journal 会把正常完成的调用也列出来（假警报会让人
+    很快学会忽略真警报），单看未配对项则分不清"工具还没跑"和"跑完了但结果没落盘"。
+
+    调用参数取自同一批未配对项（`Message.tool_input`），不额外读一遍会话。
+
+    读不到就返回空：attach 的主职责是查看状态，不该被恢复判定拖垮。
+    """
+    from core.archive import read_unpaired_tool_uses
+    from core.host import find_pending_confirmations
+
+    try:
+        unpaired = read_unpaired_tool_uses(session_dir)
+        inputs = {m.tool_use_id: dict(m.tool_input or {}) for m in unpaired}
+        return [
+            _PendingEffect(
+                tool_use_id=p.tool_use_id,
+                tool_name=p.tool_name,
+                summary=p.summary,
+                tool_input=inputs.get(p.tool_use_id, {}),
+            )
+            for p in find_pending_confirmations(session_dir, unpaired)
+        ]
+    except Exception:  # noqa: BLE001 —— 恢复判定失败不该让 attach 失败
+        return []
+
+
 def _print_run_detail(record, workspace: Path) -> None:
     """离线部分：状态信息（不需要 host 就能给）。"""
     print(f"run_id   : {record.id}")
@@ -222,17 +282,36 @@ async def _continue_run(client, record, args: argparse.Namespace, workspace: Pat
     """继续该 run。
 
     **不自动重跑**是本条的硬要求（spec §128、checklist「不自动重跑」）：继续只是往
-    会话投一个新的用户回合，此前已经执行过的工具不会再被执行一次。这里额外把 journal
-    里已记录的副作用列出来，让用户知道哪些写操作可能已经生效过——只看，不执行。
+    会话投一个新的用户回合，此前已经执行过的工具不会再被执行一次。这里额外把「可能
+    已经生效、但结果没落盘」的调用点列出来——那是崩溃截断处最危险的一类，只看不执行。
     """
     session_dir = workspace / ".codeforge" / "sessions" / record.session_id
+
+    pending = _pending_confirmations(session_dir)
+    if pending:
+        print(
+            f"⚠️ 该会话有 {len(pending)} 个调用**可能已经生效**、但结果没落盘"
+            "（继续不会自动重跑它们）："
+        )
+        for item in pending:
+            hint = _input_hint(item.tool_input)
+            print(f"  - {item.tool_name}{': ' + hint if hint else ''}")
+            print(f"    tool_use_id = {item.tool_use_id}")
+            if item.summary:
+                print(f"    上次返回：{item.summary[:100]}")
+        print("  需要重跑请自己判断后手动发起——写操作重放未必等价（追加、并发、外部副作用）。")
+    else:
+        print("该会话没有「已执行但结果未落盘」的调用，从这里继续是安全的。")
+
     entries = _read_journal_tail(session_dir)
     if entries:
-        print(f"该会话已记录 {len(entries)} 条副作用（继续时不会重跑）：")
+        print(f"\n最近 {len(entries)} 条副作用记录（只读，不会重放）：")
         for e in entries:
-            print(f"  - {e.tool_name}: {str(e.summary)[:100]}")
-    else:
-        print("该会话没有已记录的副作用，可以放心继续。")
+            # journal 存的是**工具返回内容**；写类工具成功时常常是空串
+            # （实测 write_file 就是），空尾的「- write_file: 」没有信息量，
+            # 退回显示 tool_use_id，好歹能拿去和上面那段、和会话对上号。
+            detail = str(e.summary)[:100] or e.tool_use_id
+            print(f"  - {e.tool_name}: {detail}")
 
     from core.host import RunStatus
 

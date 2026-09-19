@@ -10,6 +10,7 @@ from core.archive.reader import (
     RECOVERY_STALE_HOURS,
     RestoreResult,
     read_messages,
+    read_unpaired_tool_uses,
     restore_session,
 )
 from core.archive.session_list import SessionItem, list_sessions
@@ -31,6 +32,7 @@ __all__ = [
     "list_sessions",
     "make_on_replace",
     "read_messages",
+    "read_unpaired_tool_uses",
     "restore_session",
     "serialize_message",
 ]
