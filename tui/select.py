@@ -47,6 +47,12 @@ def get_key() -> str:
     """读取一个导航键：UP / DOWN / ENTER / ESC / CTRL_C。
 
     非 TTY（管道 / CI）时直接返回 ENTER。Windows 用 msvcrt，Unix 用 termios。
+
+    扩展键的前缀两种都认（`\\xe0` 与 `\\x00`）：CRT 用哪个前缀取决于控制台记录里的
+    `ENHANCED_KEY` 标志，而这个标志**不由本程序控制**。实测（`WriteConsoleInputW`
+    注入真实按键事件）：置位 → `\\xe0`+扫描码；不置位 → `\\x00`+扫描码，同一个物理
+    按键两种编码。只认 `\\xe0` 会让另一种**静默无反应**——在权限对话框里这不是小事：
+    用户按下箭头没动静，再按回车就把权限批了。所以两种前缀都接受。
     """
     if not sys.stdin.isatty():
         return "ENTER"
@@ -57,7 +63,7 @@ def get_key() -> str:
 
             while True:
                 ch = msvcrt.getwch()
-                if ch == "\xe0":
+                if ch in ("\xe0", "\x00"):
                     ch2 = msvcrt.getwch()
                     mapping = {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}
                     return mapping.get(ch2, "ENTER")
