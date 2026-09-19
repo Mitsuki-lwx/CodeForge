@@ -159,10 +159,27 @@ class SessionLock:
         return self.read_holder() == self._pid
 
     def _unlink_quietly(self) -> None:
+        """尽力删除锁文件；删不掉只告警，**绝不抛出**。
+
+        只吞 `FileNotFoundError` 是不够的：Windows 上文件被别的进程占用会抛
+        `PermissionError`，而锁文件恰恰是多进程都会碰的那个。两个调用点都经不起抛：
+        - `release()` 在**关闭路径**上（`Bundle.close() → Writer.close() → release()`）。
+          删不掉锁的后果只是残留一个锁文件（还有 stale 回收按 pid 判活兜底），
+          而抛出去会让整个 teardown 中断——后续清理不执行、run 落不到终态。
+          （2026-09-19 实测踩到：`wait_closed()` 卡在这里，run 停在 running。）
+        - `acquire()` 的 stale 回收路径靠循环重试，抛出会跳过退避重试。
+        失败必须留痕：完全静默会让"锁为什么没清掉"变成下一个无从下手的谜。
+        """
         try:
             self._path.unlink()
         except FileNotFoundError:
             pass
+        except OSError as e:
+            logger.warning(
+                "无法删除锁文件 %s（本次释放继续；stale 回收会按 pid 判活处理）：%s",
+                self._path,
+                e,
+            )
 
     def __enter__(self) -> SessionLock:  # noqa: PYI034 —— 返回 self，与 Writer 同构
         self.acquire()
