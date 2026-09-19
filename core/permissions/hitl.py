@@ -24,6 +24,10 @@ class HITLRequest:
     description: str       # 人类可读的操作描述
     arguments: dict = field(default_factory=dict)
     risk_hint: str = ""    # 风险提示（如有）
+    # 请求来源：子 Agent 的可读名；空串 = 主 Agent 自己发起的。
+    # 用途是让用户在弹窗上看到「是谁在要权限」——子 Agent 冒泡上来的审批
+    # 若不说来源，用户会以为是主 Agent 在要，判断依据就错了。
+    origin: str = ""
 
 
 @dataclass

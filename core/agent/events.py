@@ -132,6 +132,9 @@ class HITLRequired:
     description: str
     arguments: dict
     risk_hint: str = ""
+    # 请求来源（子 Agent 可读名）；空 = 主 Agent 自己发起。
+    # 冒泡上来的子 Agent 审批必须带它，否则用户会错判是谁在要权限。
+    origin: str = ""
 
 
 @dataclass

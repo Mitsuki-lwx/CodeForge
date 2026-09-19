@@ -728,3 +728,162 @@ def test_role_without_dontask_follows_parent_policy():
     )
 
     assert sub.unattended_policy is UnattendedPolicy.ALLOW_WRITE
+
+
+# ── 审批升级通道的前后台分流（spec_subagent.md 附录 A.5.2）─────────────
+#
+# 规格：前台子 Agent 的 ask 冒泡到主 TUI；后台不冒泡，保持策略代答。
+# 这里钉住最要紧的一条接缝：子 Agent 建的时候**已经挂了策略**（allow_write），
+# 不摘掉策略，请求在权限层就被代答掉了、通道根本轮不到 —— 功能会是死的。
+
+
+class _ScriptedClient:
+    """按脚本产出：先调一次 write_file，再收尾。"""
+
+    def __init__(self) -> None:
+        self.config = _FakeConfig()
+        self._script = [
+            [
+                {
+                    "kind": "tool",
+                    "name": "write_file",
+                    "input": {"file_path": "probe_out.txt", "content": "x"},
+                }
+            ],
+            [{"kind": "text", "text": "done"}],
+        ]
+
+    async def stream_chat(
+        self, messages, system_prompt="", tools=None, system_blocks=None
+    ):
+        from llm.stream_events import CompletionDone, TextChunk, ToolUse
+
+        step = (
+            self._script.pop(0) if self._script else [{"kind": "text", "text": "done"}]
+        )
+        for item in step:
+            if item.get("kind") == "text":
+                yield TextChunk(text=item["text"])
+            else:
+                yield ToolUse(id="c1", name=item["name"], input=item.get("input", {}))
+        yield CompletionDone(usage={"input_tokens": 5, "output_tokens": 2})
+
+
+def _plain_role():
+    """默认模式、不声明 dontask 的定义式角色。"""
+    from core.agent.roles import AgentRole
+    from core.permissions.modes import PermissionMode
+
+    return AgentRole(
+        name="roleguy",
+        description="x",
+        max_turns=5,
+        permission_mode=PermissionMode.DEFAULT,
+        dont_ask=False,
+    )
+
+
+def _parent_with_upgrader(cwd, upgrader) -> Agent:
+    from core.permissions.modes import PermissionMode
+    from core.tool.tools import get_default_registry
+
+    return Agent(
+        registry=get_default_registry(),
+        llm_client=_ScriptedClient(),
+        exec_ctx=ExecutionContext(
+            cwd=Path(cwd), session_id="main", approval_upgrader=upgrader
+        ),
+        conversation=ConversationManager(),
+        config=AgentConfig(max_iterations=5),
+        runtime=SessionRuntime(),
+        permission_mode=PermissionMode.DEFAULT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_foreground_subagent_escalates_approval(tmp_path):
+    """前台：请求冒泡到通道并带来源；放行后写盘；跑完通道摘掉、策略还原。"""
+    from core.permissions.hitl import HITLChoice, HITLRequest, HITLResponse
+    from core.permissions.upgrade import ApprovalUpgrader
+    from core.tool.tools.agent_tool import AgentArgs, AgentTool
+
+    up = ApprovalUpgrader()
+    seen: list[HITLRequest] = []
+
+    def handler(req: HITLRequest) -> HITLResponse:
+        seen.append(req)
+        return HITLResponse(choice=HITLChoice.ALLOW_ONCE, tool_name=req.tool_name)
+
+    up.start(handler)
+    parent = _parent_with_upgrader(tmp_path, up)
+    tool = AgentTool(catalog=None, task_mgr=None, bg_enabled=True)
+    tool.set_parent(parent)
+    sub = tool._build_sub_agent(
+        role=_plain_role(),
+        allowed=["write_file"],
+        session_id="main",
+        is_fork=False,
+        name="calc",
+    )
+    # 前提：建完就有策略 —— 正因如此，`_run_foreground` 必须把它摘掉
+    policy_before = sub.unattended_policy
+    assert policy_before is not None
+
+    try:
+        result = await tool._run_foreground(
+            sub, ConversationManager(), AgentArgs(prompt="do it")
+        )
+    finally:
+        await up.stop()
+
+    assert len(seen) == 1, "前台子 Agent 的 ask 必须冒泡到通道"
+    assert seen[0].origin == "calc", "请求必须带上来源身份"
+    assert result.success
+    assert (sub._exec_ctx.cwd / "probe_out.txt").exists(), "放行后工具应执行"
+    assert sub._approval_upgrader is None, "跑完必须摘掉通道（实例可能被续派复用）"
+    assert sub.unattended_policy is policy_before, "策略必须还原"
+
+
+@pytest.mark.asyncio
+async def test_background_subagent_does_not_escalate(tmp_path):
+    """后台：**不**冒泡（父已继续跑，没有可弹窗的时机），保持策略代答。"""
+    import json
+
+    from core.permissions.hitl import HITLChoice, HITLRequest, HITLResponse
+    from core.permissions.upgrade import ApprovalUpgrader
+    from core.task.manager import BackgroundTaskManager
+    from core.tool.tools.agent_tool import AgentArgs, AgentTool
+
+    up = ApprovalUpgrader()
+    seen: list[HITLRequest] = []
+
+    def handler(req: HITLRequest) -> HITLResponse:
+        seen.append(req)
+        return HITLResponse(choice=HITLChoice.DENY, tool_name=req.tool_name)
+
+    up.start(handler)
+    parent = _parent_with_upgrader(tmp_path, up)
+    mgr = BackgroundTaskManager()
+    done_q = mgr.subscribe_done()
+    tool = AgentTool(catalog=None, task_mgr=mgr, bg_enabled=True)
+    tool.set_parent(parent)
+    sub = tool._build_sub_agent(
+        role=_plain_role(),
+        allowed=["write_file"],
+        session_id="main",
+        is_fork=False,
+        name="bgcalc",
+    )
+
+    try:
+        result = await tool._run_background(
+            sub, ConversationManager(), AgentArgs(prompt="do it", name="bgcalc")
+        )
+        json.loads(result.data)  # 确认是 async_launched 结构
+        await asyncio.wait_for(done_q.get(), timeout=20)
+    finally:
+        await up.stop()
+
+    assert seen == [], "后台子 Agent 不该弹审批（消费者在跑也不该被问到）"
+    # 策略代答放行写操作 → 文件仍应写出，行为与今天一致
+    assert (sub._exec_ctx.cwd / "probe_out.txt").exists()

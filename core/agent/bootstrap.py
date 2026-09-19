@@ -39,6 +39,7 @@ from core.instructions import load_instructions
 from core.mcp import ConnectionPool, MCPToolAdapter, load_mcp_config
 from core.notes import NoteStore, build_memory_index_text
 from core.notes.state import SessionStateStore
+from core.permissions.upgrade import ApprovalUpgrader
 from core.skills import SkillExecutor, SkillLoader
 from core.task.manager import BackgroundTaskManager
 from core.task.tools import SendMessageTool, TaskGetTool, TaskListTool, TaskStopTool
@@ -219,6 +220,7 @@ async def build_session(
     reuse: ReuseContext | None = None,
     lock_session: bool = False,
     config_path: str = "config.yaml",
+    approval_upgrader: ApprovalUpgrader | None = None,
 ) -> SessionBundle:
     """装配一个可用的会话。
 
@@ -240,6 +242,10 @@ async def build_session(
             读到两段互不衔接的对话。TUI 路径默认关（行为不变）。
             抢锁失败抛 `core.host.lock.SessionLockedError`。
         config_path: features 配置来源。
+        approval_upgrader: 审批升级通道（`core.permissions.upgrade.ApprovalUpgrader`）。
+            由**界面**建（消费者要在界面里弹窗），装进 `exec_ctx` 供下传——
+            只有前台子 Agent 会被 `_run_foreground` 真正激活它，主 Agent 自己
+            不挂（保持 `yield HITLRequired` 原路径）。传 `None` = 不启用。
 
     Returns:
         SessionBundle（含装配提示 notices）。
@@ -279,6 +285,10 @@ async def build_session(
         # 挂在这里而不是 TUI 侧：装配是唯一入口，fork / 队友 / 嵌套子 Agent
         # 都从这里继承同一个汇，不必各自接线。
         progress=ProgressSink(),
+        # 审批升级通道：与进度汇同理挂在这里（装配是唯一入口），但**语义不同**——
+        # 它只是"可用"，并不自动对主 Agent 生效：主 Agent 保持 `yield HITLRequired`
+        # 原路径，只有 `_run_foreground` 会把它下传并激活到子 Agent 实例上。
+        approval_upgrader=approval_upgrader,
     )
     agent_config = AgentConfig(max_iterations=25)
 

@@ -56,6 +56,7 @@ from core.mcp import ConnectionPool
 from core.permissions.hitl import HITLChoice
 from core.permissions.modes import PermissionMode
 from core.permissions.rules import extract_content
+from core.permissions.upgrade import ApprovalUpgrader
 from tui.completer import CommandCompleter
 from tui.hitl_dialog import show_hitl_dialog
 from tui.provider_select import select_provider
@@ -134,6 +135,10 @@ class CodeForgeApp:
     state: object | None = None  # core.notes.state.SessionStateStore | None
     provider_list: list = field(default_factory=list)  # 已加载的 provider 列表（/model 用）
     router_cfg: object | None = None  # config.model.RouterConfig | None（路由配置）
+    # 审批升级通道（core.permissions.upgrade.ApprovalUpgrader）：
+    # 前台子 Agent 的 ask 经它冒泡到这里弹窗。`/resume` 换会话时要把它
+    # 一起传进新的 build_session，否则恢复后的会话里子 Agent 审批会失联。
+    approval_upgrader: object | None = None
 
     # ── UI Protocol 实现（handler 通过此接口操作 TUI）──────────────
 
@@ -554,6 +559,10 @@ class CodeForgeApp:
                 wt_manager=self.wt_manager,
                 notes=self.notes,
             ),
+            # 同一个通道实例要带过去：`/resume` 会重建 exec_ctx，不带的话恢复后的
+            # 会话里前台子 Agent 的审批就失联了（消费者 Task 绑的是同一个 console，
+            # 无需重启，只是新 session 得认得它）。
+            approval_upgrader=self.approval_upgrader,
         )
 
         # 旧 writer 关闭；旧会话 JSONL 保留不删（F24）
@@ -1024,11 +1033,15 @@ async def _handle_hitl(
         description=event.description,
         arguments=event.arguments,
         risk_hint=event.risk_hint,
+        origin=event.origin,
     )
     response = show_hitl_dialog(console, request)
 
     allowed = response.choice != HITLChoice.DENY
-    if response.choice == HITLChoice.ALLOW_SESSION:
+    if response.choice == HITLChoice.ALLOW_SESSION and not event.origin:
+        # 只为主 Agent 自己的请求记账本。子 Agent 的「本会话允许」由它自己
+        # 记在**自己的** checker 上（见 `Agent._execute_tools` 的升级分支）——
+        # 记到主 Agent 这里会让"为子 Agent 放行"变成"给主 Agent 也放行"。
         content = extract_content(event.tool_name, event.arguments)
         agent._permission_checker.add_session_allow(event.tool_name, content)
 
@@ -1106,6 +1119,11 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
     bundle: SessionBundle | None = None
     app: CodeForgeApp | None = None
     _task_done_consumer: asyncio.Task | None = None
+    # 审批升级通道：只有**交互式 TUI** 才建。无头单任务（`--task`）保持既有语义
+    # （ask 由无人值守策略代答），不能因为多了个通道就改变它的行为。
+    _approval_upgrader: ApprovalUpgrader | None = None
+    if not task:
+        _approval_upgrader = ApprovalUpgrader()
 
     try:
         # ── 唯一装配入口：新建与恢复走同一条路径（core/agent/bootstrap.py）──
@@ -1118,6 +1136,7 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
                 workspace=workspace,
                 loop_spec=loop,
                 headless=bool(task),
+                approval_upgrader=_approval_upgrader,
             )
         except CommandRegistrationError as e:
             print(f"命令注册冲突，启动终止: {e}")
@@ -1167,6 +1186,15 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
 
         # 启动 task notification 消费协程
         _task_done_consumer = asyncio.create_task(_consume_task_done(app))
+
+        # 审批升级通道：起独立消费者 Task。**必须独立**——主协程在 `await` 子 Agent
+        # 时是卡住的，自己取不了请求（实测那会死锁）；消费者若同步弹窗又会冻住整个
+        # 事件循环（连后台子 Agent 一起冻）。形态选择的实测对比见 upgrade 模块 docstring。
+        app.approval_upgrader = _approval_upgrader
+        if _approval_upgrader is not None:
+            _approval_upgrader.start(
+                lambda req: show_hitl_dialog(app.console, req)
+            )
 
         # ── Hook: 会话启动（首条用户消息进入对话前）──
         await bundle.hook_runner.run(
@@ -1283,6 +1311,9 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
             console.print("[dim]---[/]\n")
 
     finally:
+        # ── 停止审批消费者 ──
+        if _approval_upgrader is not None:
+            await _approval_upgrader.stop()
         # ── 停止 task notification 消费 ──
         if _task_done_consumer is not None and not _task_done_consumer.done():
             _task_done_consumer.cancel()

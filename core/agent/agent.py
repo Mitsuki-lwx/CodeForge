@@ -55,6 +55,7 @@ from core.hooks.events import HookContext
 from core.host.journal import SIDE_EFFECT_CATEGORIES, SideEffectJournal
 from core.permissions.checker import Decision, PermissionChecker
 from core.permissions.dangerous import DangerousCommandDetector
+from core.permissions.hitl import HITLRequest
 from core.permissions.modes import (
     INTERACTIVE_TOOLS,
     PermissionMode,
@@ -1178,6 +1179,33 @@ class Agent:
                 self._emit_metric("codeforge.permission.denied", 1, delta=True)
             if decision.effect == "deny":
                 results[tu.id] = (False, decision.reason, 0, {})
+            elif decision.effect == "ask" and self._approval_upgrader is not None:
+                # ── 升级到上层决策（spec 能力清单第 9 条的第三层）──
+                # 子 Agent 在 `_run_loop` 里**内部消费**自己的事件流，它 yield 出来的
+                # `HITLRequired` 无人读；而父 Agent 此刻正处于 `await`、不能 yield。
+                # 所以这里不走事件流，直接等一条独立通道。形态选择的实测对比见
+                # `core/permissions/upgrade.py` 模块 docstring。
+                outcome = await self._approval_upgrader.request(
+                    HITLRequest(
+                        tool_name=tu.name,
+                        description=self._describe_tool_action(tu),
+                        arguments=tu.input,
+                        risk_hint=decision.reason,
+                        origin=self._agent_name,
+                    )
+                )
+                if outcome.allowed:
+                    # 「本会话允许」必须记到**子 Agent 自己的**权限账本上。
+                    # 记到主 Agent 的会让"为子 Agent 放行"变成"给主 Agent 也放行"
+                    # —— 那是反向越权，正好是本通道要防的东西。
+                    if outcome.choice == "allow_session":
+                        self._permission_checker.add_session_allow(
+                            tu.name, extract_content(tu.name, tu.input)
+                        )
+                    results[tu.id] = await self._exec_one(tu)
+                else:
+                    # 原因必须可读：父要靠它向用户解释"这步为什么没做成"。
+                    results[tu.id] = (False, outcome.reason, 0, {})
             elif decision.effect == "ask":
                 # 顺序要紧：**先 clear 再 yield**。
                 # yield 把控制权交给调用方，而调用方可能在同一轮事件循环里立刻
@@ -1193,13 +1221,16 @@ class Agent:
                     description=self._describe_tool_action(tu),
                     arguments=tu.input,
                     risk_hint=decision.reason,
+                    origin=self._agent_name,
                 )
                 await self._hitl_event.wait()
                 allowed = self._hitl_results.get(tu.id, False)
                 if allowed:
                     results[tu.id] = await self._exec_one(tu)
                 else:
-                    results[tu.id] = (False, "User denied", 0, {})
+                    # 交互式路径下的拒绝只有一种来源（用户点了拒绝），
+                    # 但仍写清"交互确认"，与策略代答 / 审批超时区分开。
+                    results[tu.id] = (False, "用户拒绝了该调用（交互确认）", 0, {})
 
         # 2. 按并发安全性分批执行已放行的工具
         allowed_tus = [tu for tu in tool_uses if tu.id not in results]

@@ -27,7 +27,10 @@ def show_hitl_dialog(
 
     Esc / Ctrl+C 视为拒绝。
     """
-    title = f"⚠ Permission Required — {request.tool_name}"
+    # 来源标注：子 Agent 冒泡上来的审批必须说清"是谁在要权限"，
+    # 否则用户会以为是主 Agent 在要，判断依据就错了（对齐 Devin 的做法）。
+    origin_tag = f"  [来自 SubAgent {request.origin}]" if request.origin else ""
+    title = f"⚠ Permission Required — {request.tool_name}{origin_tag}"
     subtitle_parts = [request.description or ""]
     if request.risk_hint:
         subtitle_parts.append(f"Risk: {request.risk_hint}")

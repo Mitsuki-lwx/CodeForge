@@ -3,6 +3,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.permissions.upgrade import ApprovalUpgrader
 
 
 @dataclass
@@ -57,3 +61,8 @@ class ExecutionContext:
     # 子 Agent 进度汇（可选）。由 `build_session` 建、经父传给子，
     # 供界面说明"在等谁、等什么"；`None` = 不采集（如测试、无人值守）。
     progress: ProgressSink | None = None
+    # 审批升级通道（可选）。由界面建，**只由 `_run_foreground` 下传到前台子 Agent**
+    # —— 子 Agent 的 `ask` 由此冒泡到主 TUI（spec 能力清单第 9 条的第三层）。
+    # 主 Agent 自己不挂（保持 `yield HITLRequired` 原路径不变），后台子 Agent 与
+    # 队友也不挂（父已继续跑，没有可弹窗的时机）—— 见 `spec_subagent.md` 附录 A.5.2。
+    approval_upgrader: ApprovalUpgrader | None = None

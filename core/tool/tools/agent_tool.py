@@ -513,6 +513,11 @@ class AgentTool(Tool):
             # 继承父的进度汇：嵌套派发时各层往同一处写，界面读到的永远是
             # "当前最内层在做什么"。父没挂汇（如单测）时为 None，即不采集。
             progress=getattr(getattr(parent, "_exec_ctx", None), "progress", None),
+            # 审批升级通道同样继承，但**只是"可用"而非"生效"** ——
+            # `_run_foreground` 才会把它激活到子 Agent 上，后台路径保持代答。
+            approval_upgrader=getattr(
+                getattr(parent, "_exec_ctx", None), "approval_upgrader", None
+            ),
         )
 
         # 隔离时注入 worktree 路径说明到 system prompt
@@ -595,7 +600,39 @@ class AgentTool(Tool):
 
         events: asyncio.Queue = asyncio.Queue(maxsize=64)
 
-        final_text = await run_to_completion(sub_agent, sub_conv, args.prompt, events)
+        # ── 激活审批升级通道（spec 能力清单第 9 条的第三层）──
+        # **只有前台**才挂：父此刻正 `await` 等它，用户也在等这一刻，弹窗是自然交互。
+        # 后台子 Agent 刻意不挂（父已继续跑，没有可弹窗的时机），仍由
+        # `resolve_child_policy()` 的策略代答 —— 见 spec_subagent.md 附录 A.5.2。
+        #
+        # 还有一个**必须先做的动作**：把子 Agent 的无人值守策略摘掉。子 Agent 建的时候
+        # 已经按 `resolve_child_policy()` 挂了策略，而策略是在**权限层**就把 `ask` 代答掉的
+        # ——不摘掉，请求根本到不了通道，这套机制就是死的（第一版就踩了这个）。
+        # 没通道时（无头 / host）策略保持原样，行为与今天逐字一致。
+        upgrader = getattr(
+            getattr(sub_agent, "_exec_ctx", None), "approval_upgrader", None
+        )
+        # 「有实例」不等于「有人在听」：host / 无头 / 单测都可能挂了个没有消费者的
+        # 通道。那种情况必须等同于"没有通道"，保持策略代答 —— 否则摘掉策略后请求
+        # 无人应答，会把子 Agent 变成一律被拒（甚至挂死）。
+        if upgrader is not None and not getattr(upgrader, "serving", False):
+            upgrader = None
+        # 注意：**没有通道时完全不碰子 Agent**。既避免给不支持该属性的对象赋值
+        # （单测里的桩会直接 AttributeError），也保证"无通道"这条路径零改动。
+        prev_policy = None
+        if upgrader is not None:
+            prev_policy = sub_agent.unattended_policy
+            sub_agent.set_unattended_policy(None)
+            sub_agent._approval_upgrader = upgrader
+        try:
+            final_text = await run_to_completion(
+                sub_agent, sub_conv, args.prompt, events
+            )
+        finally:
+            # 子 Agent 实例可能被复用（续派），别把通道和策略改动留在它身上。
+            if upgrader is not None:
+                sub_agent._approval_upgrader = None
+                sub_agent.set_unattended_policy(prev_policy)
         # 子 agent 出错（run_to_completion 返回 "Error: ..."）→ 结构化 success=False，
         # 让 Lead 明确知道委派失败，而非拿到一段错误文本当成功。
         if final_text.startswith("Error:"):
