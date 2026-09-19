@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from pathlib import Path
 
 import pytest
@@ -370,13 +371,9 @@ async def _http_capture():
 
 @pytest.mark.asyncio
 async def test_http_body_template_renders(tmp_path, monkeypatch):
-    # httpx 默认 `trust_env=True`，会读 `HTTP_PROXY`/`HTTPS_PROXY`。本机环境设了
-    # 一个本机代理却没设 `NO_PROXY`，于是连 127.0.0.1 的请求也被送去代理，
-    # 根本到不了下面的测试服务器（表现为 `captured` 里没有 `data`，很像时序问题）。
-    # 这里显式把 loopback 排除掉：本用例要测的是**模板渲染**，不是代理行为。
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
-    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
-
+    # 这里不再需要隔离 `NO_PROXY`：runner 现在自己会为 loopback 目标绕过代理
+    # （见 `test_http_hook_to_loopback_bypasses_proxy`）。先前那两行 setenv 是
+    # 绕开本机代理的权宜之计，留着反而会掩盖被测行为。
     server, port, captured = await _http_capture()
     async with server:
         rule = HookRule(
@@ -543,3 +540,135 @@ def test_hooks_command_empty_and_listed(capsys):
     assert ui2.lines[0].startswith("  a  pre_tool  command [once]")
     assert ui2.lines[1].startswith("  b  session_start  prompt")
     assert ui2.lines[-1] == "Loaded from: /p/.codeforge/hooks.yaml"
+
+
+# ── loopback 绕过代理（回归锁）────────────────────────────────────
+#
+# httpx 默认 `trust_env=True`，会读 `HTTP_PROXY`/`HTTPS_PROXY`。很多环境只设了代理、
+# **没设 `NO_PROXY`**（实测本机就是这样），于是「给本机服务配一条 hook」会被送去
+# 代理、连接失败，而且失败只落一条 WARNING —— 看起来像 hook 压根没触发。
+# curl / requests / 浏览器都显式绕过 loopback，runner 现在对齐同样行为。
+
+
+def _dead_port() -> int:
+    """拿一个刚释放的端口当"连不上的代理"。"""
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+    finally:
+        s.close()
+
+
+def _point_proxy_at_dead_port(monkeypatch, dead_port: int) -> None:
+    """把代理指向一个死端口，并清掉所有会豁免它的变量。
+
+    ⚠️ 顺序要紧：**先 delenv 再 setenv**。Windows 上环境变量名**不区分大小写**，
+    `delenv("http_proxy")` 会删掉刚刚 `setenv("HTTP_PROXY")` 设的那个变量 ——
+    两者是同一个。踩过一次：结果代理压根没设上，测试变成"永远通过"的摆设
+    （变异注入时暴露的）。
+    """
+    for name in (
+        "NO_PROXY",
+        "no_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(name, f"http://127.0.0.1:{dead_port}")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://127.0.0.1:8080/x", True),
+        ("http://127.1.2.3/x", True),  # 127/8 整段都保留给 loopback
+        ("http://[::1]:9000/x", True),  # IPv6
+        ("http://localhost:1234/x", True),
+        ("http://api.localhost/x", True),  # RFC 6761 保留
+        ("https://example.com/hook", False),
+        ("http://192.168.1.10/x", False),  # 内网 ≠ loopback，仍应遵循代理设置
+        ("http://10.0.0.5/x", False),
+        ("not-a-url", False),
+        ("", False),
+    ],
+)
+def test_is_loopback_target(url, expected):
+    """钉住判定规则本身；尤其别把内网地址也当成 loopback（那会绕过用户配的代理）。"""
+    from core.hooks.runner import _is_loopback_target
+
+    assert _is_loopback_target(url) is expected
+
+
+@pytest.mark.asyncio
+async def test_http_hook_to_loopback_bypasses_proxy(tmp_path, monkeypatch):
+    """设了代理也必须直达本机 —— 这是修复的回归锁。
+
+    用「连不上的代理端口」而非 mock 代理，因为要验的正是 httpx 有没有去碰代理：
+    修复前请求会被送去死端口，本机服务器收不到（`captured` 里没有 `data`）。
+    """
+    _point_proxy_at_dead_port(monkeypatch, _dead_port())
+
+    server, port, captured = await _http_capture()
+    async with server:
+        rule = HookRule(
+            name="h",
+            event="turn_start",
+            action=HookAction(
+                type="http", url=f"http://127.0.0.1:{port}/x", body="event={event}"
+            ),
+        )
+        runner = HookRunner(rules=[rule], cwd=tmp_path)
+        await runner.run("turn_start", _ctx("turn_start", session_id="s1"))
+
+    assert "data" in captured, "请求被送去代理了，没到达本机服务"
+    assert b"event=turn_start" in captured["data"]
+
+
+@pytest.mark.asyncio
+async def test_http_hook_to_localhost_name_also_bypasses_proxy(tmp_path, monkeypatch):
+    """主机名 `localhost` 同样算 loopback —— 不能只认 IP 字面量。"""
+    _point_proxy_at_dead_port(monkeypatch, _dead_port())
+
+    server, port, captured = await _http_capture()
+    async with server:
+        rule = HookRule(
+            name="h",
+            event="turn_start",
+            action=HookAction(
+                type="http", url=f"http://localhost:{port}/x", body="event={event}"
+            ),
+        )
+        runner = HookRunner(rules=[rule], cwd=tmp_path)
+        await runner.run("turn_start", _ctx("turn_start", session_id="s1"))
+
+    assert "data" in captured, "localhost 未被识别为 loopback"
+
+
+@pytest.mark.asyncio
+async def test_http_body_template_type_error_is_contained(tmp_path, monkeypatch):
+    """模板渲染的**任何**失败都必须降级为可读错误，不逃出 hook 的"绝不抛出"约定。
+
+    `TypeError` 是补上的那一类：`asdict()` 对非 dataclass 抛它。这里直接让
+    `asdict` 抛，验证异常不会穿透 `run()`。
+    """
+    import core.hooks.runner as runner_mod
+
+    def _boom(_obj):
+        raise TypeError("模拟 asdict 收到非 dataclass")
+
+    monkeypatch.setattr(runner_mod, "asdict", _boom)
+
+    rule = HookRule(
+        name="h",
+        event="turn_start",
+        action=HookAction(type="http", url="http://127.0.0.1:1/x", body="{event}"),
+    )
+    runner = HookRunner(rules=[rule], cwd=tmp_path)
+    # 关键断言：不抛异常（hook 失败只记日志 / 收进 outcome）
+    await runner.run("turn_start", _ctx("turn_start", session_id="s1"))

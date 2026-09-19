@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from core.hooks.events import HookContext, context_to_env, context_to_stdin, field_value
 from core.hooks.inject import InjectionStore
@@ -60,6 +62,29 @@ class _Outcome:
     blocked: bool = False
     reason: str = ""
     err: Exception | None = None
+
+
+def _is_loopback_target(url: str) -> bool:
+    """目标是否指向本机（loopback）。
+
+    loopback 请求**不该走代理**：代理通常不在本机，把 127.0.0.1 的请求发出去本身
+    就是错的；更要紧的是很多环境只设了 `HTTP_PROXY` 而没设 `NO_PROXY`（实测本机
+    就是这样），于是「给本机服务配一条 hook」会在有代理的机器上**静默失效**——
+    httpx 连不上代理，异常被吞成一条 WARNING，看起来像 hook 压根没触发。
+    curl / requests / 浏览器都显式绕过 loopback，这里对齐同样的行为。
+
+    `localhost` 与 `*.localhost` 按约定保留给 loopback（RFC 6761），一并视为本机。
+    解析不出 host（相对 URL、空串）时返回 False —— 那种情况下走默认行为更安全。
+    """
+    host = urlsplit(url).hostname  # 取 host：去端口、小写、去 IPv6 方括号
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class HookRunner:
@@ -252,10 +277,19 @@ class HookRunner:
         else:
             try:
                 body = ha.body.format_map(asdict(ctx))
-            except (KeyError, IndexError, ValueError) as e:
+            except (KeyError, IndexError, ValueError, TypeError) as e:
+                # TypeError 来自 `asdict()` 对非 dataclass 抛错（ctx 的类型由调用方
+                # 决定）。漏了它，异常就逃出"hook 失败绝不抛出"这条约定（模块 docstring N1），
+                # 而这里本该降级成一条可读的 template failed。
                 return _Outcome(err=RuntimeError(f"http body template failed: {e}"))
         try:
-            async with httpx.AsyncClient(timeout=rule.timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=rule.timeout,
+                # loopback 目标绕过代理（理由见 _is_loopback_target）：
+                # httpx 默认 trust_env=True，会读 HTTP_PROXY/HTTPS_PROXY，
+                # 而没设 NO_PROXY 的环境会把本机请求也送去代理 → 静默失效。
+                trust_env=not _is_loopback_target(ha.url),
+            ) as client:
                 resp = await client.request(
                     ha.method, ha.url, content=body, headers=ha.headers
                 )
