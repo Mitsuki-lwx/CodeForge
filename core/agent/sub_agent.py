@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import contextmanager
 from typing import Any
 
 from conversation.manager import ConversationManager
@@ -56,6 +57,138 @@ def _clear_progress(agent: Any) -> None:
         sink.clear()
 
 
+# ── 审批应答机制：收口 + 安全网 ─────────────────────────────────────────
+#
+# `ask` 级决策必须有人应答，否则 `Agent._execute_tools` 会停在
+# `await self._hitl_event.wait()` 上**无限期挂死**。应答者只有三种：
+#   1. `unattended_policy`   权限层代答
+#   2. `_dont_ask`           权限层转 allow（`--task` 无头）
+#   3. `approval_upgrader`   审批通道冒泡，或有人调 `resolve_hitl`
+#
+# 三者原先由各入口**分别手工设置**，于是 `core/skills/executor.py` 的 fork Agent
+# 三者全无、跑一条非白名单命令就挂死（实测复现见
+# `.workbuddy-ai/verify_skill_fork_hang.py`）。这是"没有收口所以新入口必漏"的
+# 第三次复发（前两次：`token_file` 静默忽略、`_run_http` 静默失败）。
+# 裁定见 `docs/spec_subagent.md` 附录 B。
+
+
+def _serving_upgrader(agent: Any) -> Any:
+    """取「**有消费者在听**」的审批通道。
+
+    「有实例」不等于「有人在听」：host / 无头 / 单测都可能挂了个没有消费者的
+    通道，那种情况必须等同于"没有通道"——否则摘掉策略后请求无人应答，
+    子 Agent 会变成一律被拒。
+    """
+    upgrader = getattr(getattr(agent, "_exec_ctx", None), "approval_upgrader", None)
+    if upgrader is not None and not getattr(upgrader, "serving", False):
+        return None
+    return upgrader
+
+
+def _has_ask_responder(agent: Any) -> bool:
+    """该 Agent **当前已生效**的 `ask` 应答者（通道 / 策略 / dont_ask 任一）。"""
+    return (
+        getattr(agent, "_approval_upgrader", None) is not None
+        or getattr(agent, "unattended_policy", None) is not None
+        or bool(getattr(agent, "_dont_ask", False))
+    )
+
+
+def _fallback_policy(parent: Any) -> Any:
+    """兜底策略：按父的授权范围推导；拿不到父就取最保守档。"""
+    from core.permissions.modes import UnattendedPolicy, resolve_child_policy
+
+    if parent is None:
+        return UnattendedPolicy.DENY_ALL
+    try:
+        return resolve_child_policy(parent)
+    except Exception:  # noqa: BLE001 —— 推导失败也必须给出一个应答者
+        return UnattendedPolicy.DENY_ALL
+
+
+@contextmanager
+def arming_approval(agent: Any, parent: Any = None):
+    """给「父在 `await` 等结果」的子 Agent 装审批应答机制（进入装、退出还原）。
+
+    **新增入口只该调这一个函数**，不要各自拼那三处设置。
+
+    决策顺序（详见 `docs/spec_subagent.md` 附录 B.3.1）：
+
+    1. **有通道，且角色未显式声明 `dontask`** → 挂通道，并摘掉
+       `unattended_policy`。策略若残留，`ask` 会在**权限层**就被代答，
+       请求根本到不了通道——整个功能会是死的（附录 A 实测踩过）。
+    2. **三种应答机制全无** → 按 `parent` 的授权范围兜底，并记 warning。
+       绝不静默挂死。
+    3. **已有应答者** → 什么都不做（既有入口零改动）。
+
+    角色**显式** `dontask` 时不抢：能力清单第 9 条的层次是
+    『父已批准账本 → 角色 `permission_mode` 兜底（含 `dontAsk`）→ 升级到主 TUI』，
+    `dontAsk` 是中间层、先于升级，抢它会破坏角色契约。
+    """
+    # 非真 Agent（单测里常见 `object()` 桩）没有可接入的机制 —— 原样透传，
+    # 不写任何属性（否则直接 AttributeError）。
+    if not hasattr(agent, "set_unattended_policy"):
+        yield
+        return
+
+    upgrader = _serving_upgrader(agent)
+    prev_policy = getattr(agent, "unattended_policy", None)
+    prev_upgrader = getattr(agent, "_approval_upgrader", None)
+    prev_dont_ask = bool(getattr(agent, "_dont_ask", False))
+    changed = False
+    try:
+        if upgrader is not None and not prev_dont_ask:
+            agent._approval_upgrader = upgrader
+            # 摘策略让 `ask` 保持 `ask`。`_dont_ask` 不必动——上面的条件已保证
+            # 角色没声明它（声明了就不会走这条分支）。
+            agent.set_unattended_policy(None)
+            changed = True
+        elif not _has_ask_responder(agent):
+            policy = _fallback_policy(parent)
+            agent.set_unattended_policy(policy)
+            changed = True
+            logger.warning(
+                "子 Agent（%s）的 ask 级决策无人应答 → 已按 %s 兜底（%s），"
+                "避免无限期挂死。",
+                getattr(agent, "_agent_name", None) or "<unnamed>",
+                getattr(policy, "value", policy),
+                "按父的授权范围推导"
+                if parent is not None
+                else "拿不到父，取最保守档",
+            )
+        yield
+    finally:
+        # 只有**改过**才还原：没改过就一个属性都不碰，保住"零改动"这条语义。
+        if changed:
+            agent._approval_upgrader = prev_upgrader
+            agent.set_unattended_policy(prev_policy)
+            agent._dont_ask = prev_dont_ask
+
+
+def _ensure_ask_responder(agent: Any) -> None:
+    """安全网：跑到底之前确认 `ask` 有人应答，没有就兜底 + 告警。
+
+    收口（`arming_approval`）要求"新入口记得调它"，而人总会忘。这道守卫放在
+    **无人值守跑到底的唯一入口** `run_to_completion` 开头，任何漏接线的入口
+    最多只是拿到一条告警 + 请求被拒，不会再无限期挂死。
+
+    刻意不还原：它在跑完即废的 Agent 上生效；若将来有"复用同一子 Agent 连跑
+    多轮"的用法，需要重新审视这一条（见 spec 附录 B.5）。
+    """
+    if _has_ask_responder(agent):
+        return
+    from core.permissions.modes import UnattendedPolicy
+
+    logger.warning(
+        "子 Agent（%s）的 ask 级决策三种应答机制全无"
+        "（无审批通道 / 无无人值守策略 / 未开 dont_ask）→ 按 deny_all 兜底。"
+        "这通常意味着某个入口漏了 arming_approval() 接线。",
+        getattr(agent, "_agent_name", None) or "<unnamed>",
+    )
+    if hasattr(agent, "set_unattended_policy"):
+        agent.set_unattended_policy(UnattendedPolicy.DENY_ALL)
+
+
 async def run_to_completion(
     agent: Any,  # Agent 实例（避免循环导入）
     conv: ConversationManager,
@@ -84,6 +217,10 @@ async def run_to_completion(
         MaxTurnsReached: 触达 max_turns 时抛出，携带最后文本。
         asyncio.CancelledError: 被取消时透传。
     """
+    # 安全网：`ask` 必须有人应答，否则会停在 `await` 上无限期挂死。
+    # 放在最开头、`agent._loop` 分支**之前**，这样连自定义 loop 也覆盖。
+    _ensure_ask_responder(agent)
+
     loop = getattr(agent, "_loop", None)
     if loop is not None:
         # 经 loop 策略（spec_loop）：默认 ReactLoop 走底层，自定义 loop 走用户逻辑

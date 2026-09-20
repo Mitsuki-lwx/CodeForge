@@ -176,9 +176,15 @@ class SkillExecutor:
             session=fork_session,
             context_window=self._runtime.context_window,
         )
+        # 继承主 Agent 的审批通道：fork 也是"父在 `await` 等结果"的前台形态，
+        # 审批理应能冒泡到界面（与 AgentTool 的前台子 Agent 一致）。
+        # 不继承的话 `arming_approval` 永远走不到通道分支，SKill 的审批只能被
+        # 策略代答 —— 用户就看不到"这个 skill 想跑什么命令"。
+        _parent_ctx = getattr(self._agent, "_exec_ctx", None)
         fork_exec_ctx = ExecutionContext(
             cwd=self._workspace,
             session_id=f"fork-{skill_name}",
+            approval_upgrader=getattr(_parent_ctx, "approval_upgrader", None),
         )
 
         fork_agent = Agent(
@@ -193,9 +199,17 @@ class SkillExecutor:
         try:
             # 复用 SubAgent 统一循环：任务已作为首条 user 消息装填到 fork_conv，
             # 传 task="" 让 run_to_completion 跳过 add_user。
-            from core.agent.sub_agent import run_to_completion
+            #
+            # ⚠️ 审批应答机制必须装（`arming_approval`，规格见 spec 附录 B）：
+            # 这个 fork Agent 原先**三种应答机制全无**，于是 skill 一旦跑一条非安全
+            # 白名单的命令（如 `pytest`、`git commit`）就会**无限期挂死**。
+            # 更阴的是下面 `except asyncio.CancelledError` 会把取消吞成
+            # `"[skill ... cancelled]"` **字符串返回** —— 从外面**看不出**它卡了。
+            # 挂上之后：有通道就冒泡到界面问，没有就按主 Agent 的授权范围代答。
+            from core.agent.sub_agent import arming_approval, run_to_completion
 
-            final_text = await run_to_completion(fork_agent, fork_conv, task="")
+            with arming_approval(fork_agent, parent=self._agent):
+                final_text = await run_to_completion(fork_agent, fork_conv, task="")
 
             # 写回 token 用量
             if fork_agent._total_usage:
