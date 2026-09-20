@@ -160,13 +160,15 @@ async def test_arming_is_idempotent_and_restores_on_exception(tmp_path):
     """异常逃出也要还原（否则会污染被续派复用的实例）。"""
     agent = _mk_agent(tmp_path)
     agent.set_unattended_policy(UnattendedPolicy.ALLOW_WRITE)
-    with pytest.raises(RuntimeError):
+    # 嵌套 `with` 是**故意的**（本用例就是在测重入），不能合并成
+    # `with A, B:`——那会变成顺序进入同一层，测不出嵌套。
+    with pytest.raises(RuntimeError):  # noqa: SIM117
         with arming_approval(agent, parent=_Parent()):
             raise RuntimeError("boom")
     assert agent.unattended_policy is UnattendedPolicy.ALLOW_WRITE
 
     # 重复进出不抛
-    with arming_approval(agent, parent=_Parent()):
+    with arming_approval(agent, parent=_Parent()):  # noqa: SIM117
         with arming_approval(agent, parent=_Parent()):
             pass
     assert agent.unattended_policy is UnattendedPolicy.ALLOW_WRITE
