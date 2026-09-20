@@ -311,3 +311,64 @@ async def test_send_message_tool_not_found(manager):
     tool = SendMessageTool(manager)
     result = await tool.execute(_ctx(), {"name": "ghost", "message": "hi"})
     assert not result.success
+
+
+# ── §1.9 / §1.10 / §3 补测（此前无人断言）─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_by_name_latest_launch_wins(monkeypatch, fake_run):
+    """同名任务：后启动者覆盖 `_by_name`（§1.9）。
+
+    覆盖是「弱引用」语义——前一个任务仍在 `list()` 里，只是按名字再也找不到它。
+    """
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    q = mgr.subscribe_done()
+
+    first = await mgr.launch(_make_agent("a"), ConversationManager(), "dup", "one")
+    await asyncio.wait_for(q.get(), timeout=3)
+    second = await mgr.launch(_make_agent("b"), ConversationManager(), "dup", "two")
+    await asyncio.wait_for(q.get(), timeout=3)
+
+    assert first != second
+    assert mgr._by_name["dup"] == second, "后启动的必须覆盖前一个"
+
+    # 行为面：按名字寻址打到的是第二个（SendMessage 走的就是 _by_name）
+    assert await mgr.send_message("dup", "again") == second
+
+
+@pytest.mark.asyncio
+async def test_done_queue_full_drops_notification_with_warning(
+    monkeypatch, fake_run, capsys
+):
+    """done 队列满（32）→ QueueFull 被捕获 + stderr 警告（§3）。
+
+    反证：通知是**真的被丢掉了**（队列里仍是那 32 条占位），而不是静默塞进去了。
+    """
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+
+    for i in range(32):
+        mgr._done.put_nowait(f"filler_{i}")
+    assert mgr._done.full()
+
+    task_id = await mgr.launch(_make_agent("r"), ConversationManager(), "", "x")
+    await asyncio.wait_for(mgr.get(task_id).handle, timeout=3)
+
+    err = capsys.readouterr().err
+    assert "done queue full" in err, f"应有 stderr 警告，实际 {err!r}"
+
+    drained = [mgr._done.get_nowait() for _ in range(mgr._done.qsize())]
+    assert drained == [f"filler_{i}" for i in range(32)], "队列内容不该被改动"
+    assert task_id not in drained, "满队列时通知必须被丢弃，不能挤进去"
+
+
+def test_task_tools_are_system_tools(manager):
+    """四个管理工具都标了 `is_system_tool = True`（§1.10）。
+
+    这面旗子决定它们是否被当作"元工具"排除在子 Agent 工具集之外；
+    此前代码里设了，但没有任何测试守着。
+    """
+    for cls in (TaskListTool, TaskGetTool, TaskStopTool, SendMessageTool):
+        assert cls(manager).is_system_tool is True, f"{cls.__name__} 未标 system tool"

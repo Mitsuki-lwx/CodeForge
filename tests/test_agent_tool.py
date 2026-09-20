@@ -46,11 +46,14 @@ class _MockClient:
             elif item.get("kind") == "tool":
                 from llm.stream_events import ToolUse
 
+                # 注意：`ToolUse` 只有 id/name/input 三个字段。
+                # 这里曾多传一个 `thinking=""` → 每次走到这条分支都抛 TypeError，
+                # 被 `_run_loop` 的宽 except 吞成 error_event，于是"脚本里的工具"
+                # 从来没真正产出过 tool_use（text-only 兜底掩盖了它）。
                 yield ToolUse(
                     id=item.get("id", "call_1"),
                     name=item["name"],
                     input=item.get("input", {}),
-                    thinking="",
                 )
         yield CompletionDone(usage={"input_tokens": 10, "output_tokens": 5})
 
@@ -887,3 +890,184 @@ async def test_background_subagent_does_not_escalate(tmp_path):
     assert seen == [], "后台子 Agent 不该弹审批（消费者在跑也不该被问到）"
     # 策略代答放行写操作 → 文件仍应写出，行为与今天一致
     assert (sub._exec_ctx.cwd / "probe_out.txt").exists()
+
+
+# ── §1.7 run_to_completion 路径（此前零覆盖：max_turns / events / 取消）──
+
+
+def _scripted_agent(script, *, max_turns=5, hooks=None) -> Agent:
+    """带脚本化 LLM 的真实 Agent（复用 _make_parent_agent 的装配）。"""
+    agent = _make_parent_agent(_make_registry())
+    agent._client._script = list(script)
+    agent._max_turns = max_turns
+    if hooks is not None:
+        agent._hooks = hooks
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_run_to_completion_reaches_max_turns_returns_last_text():
+    """触达 max_turns → 返回累计 assistant 文本，**不抛异常**。
+
+    清单 §1.7「触达 max_turns → 返回最后 assistant 文本」。
+    注意 `run_to_completion` 的 docstring 写的是 `Raises: MaxTurnsReached`，
+    代码实际是 `return` —— 以代码为准（docstring 与实现不一致，已在清单里记一笔）。
+    """
+    from core.agent.sub_agent import run_to_completion
+
+    # 每轮都带一个 tool_use，循环永远不会自然终止 → 必然走 max_turns 出口
+    step = [{"kind": "text", "text": "t"}, {"kind": "tool", "name": "read_file"}]
+    agent = _scripted_agent([list(step), list(step), list(step)], max_turns=2)
+
+    result = await run_to_completion(agent, ConversationManager(), "go")
+    assert result == "tt", f"两轮各累计一个 't'，期望 'tt'，实际 {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_run_to_completion_forwards_events_to_queue():
+    """events 队列转发：text / tools_start / tool 三类都能被外部消费到。"""
+    from core.agent.sub_agent import run_to_completion
+
+    agent = _scripted_agent(
+        [[{"kind": "text", "text": "hi"}, {"kind": "tool", "name": "read_file"}]],
+        max_turns=3,
+    )
+    q: asyncio.Queue = asyncio.Queue()
+
+    await run_to_completion(agent, ConversationManager(), "go", q)
+
+    kinds: list[str] = []
+    while not q.empty():
+        kinds.append(q.get_nowait()[0])
+    assert "text" in kinds, f"未转发 text 事件，实际 {kinds}"
+    assert "tools_start" in kinds, f"未转发 tools_start 事件，实际 {kinds}"
+    assert "tool" in kinds, f"未转发 tool 事件，实际 {kinds}"
+
+
+@pytest.mark.asyncio
+async def test_run_to_completion_propagates_cancelled_error():
+    """取消标记已置位 → 首轮即抛 CancelledError（清单 §1.7「透传」）。"""
+    from core.agent.sub_agent import run_to_completion
+
+    agent = _scripted_agent([[{"kind": "text", "text": "x"}]])
+    agent._cancel.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_to_completion(agent, ConversationManager(), "go")
+
+
+# ── §1.8 Fork 上下文的工具层拦截（此前只测了 is_fork_context 本身）──
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_blocks_spawn_from_fork_context():
+    """父对话含 fork boilerplate → Agent 工具拒绝派生（§1.8）。
+
+    此前 `is_fork_context` 有单测，但「工具层真的拿它拦人」这条接线无人守。
+    """
+    from core.agent.fork import build_forked_messages
+    from core.tool.tools.agent_tool import AgentTool
+
+    tool = AgentTool(
+        catalog=load_catalog(str(Path.cwd())), task_mgr=None, bg_enabled=True
+    )
+    parent = _make_parent_agent(_make_registry())
+    parent._conversation.replace_history(build_forked_messages([], "prior task"))
+    tool.set_parent(parent)
+
+    result = await tool.execute(_ctx("main"), {"prompt": "nested", "description": "d"})
+    assert not result.success, "Fork 上下文里派子 Agent 必须被拦"
+    assert "boilerplate" in result.error, f"错误信息应点名 boilerplate：{result.error}"
+
+
+# ── §3 hook 引擎在子 Agent 内仍生效 ────────────────────────────────
+
+
+def test_subagent_inherits_parent_hooks():
+    """接缝：`_build_sub_agent` 把父的 hook 引擎传给子 Agent。
+
+    不继承 = 子 Agent 里所有 PreToolUse/PostToolUse 静默失效。
+    """
+    from core.hooks.runner import HookRunner
+    from core.tool.tools.agent_tool import AgentTool
+
+    runner = HookRunner([], cwd=Path.cwd())
+    parent = _make_parent_agent(_make_registry())
+    parent._hooks = runner
+    tool = AgentTool(catalog=None, task_mgr=None, bg_enabled=True)
+    tool.set_parent(parent)
+
+    sub = tool._build_sub_agent(_plain_role(), ["read_file"], "main", is_fork=False)
+    assert sub._hooks is runner, "子 Agent 必须继承父的 hook 引擎"
+
+
+@pytest.mark.asyncio
+async def test_hook_engine_blocks_tool_inside_subagent(tmp_path):
+    """功能面：blocking pre_tool hook 真的能在子 Agent 内拦住工具。
+
+    反证（同一条调用在无 hook 时工具照常执行）——否则「被拦了」可能是别的原因
+    （比如权限拒绝、工具不存在）。
+    """
+    from core.hooks.rules import HookAction, HookRule
+    from core.hooks.runner import HookRunner
+    from core.tool.tools import get_default_registry
+    from core.tool.tools.agent_tool import AgentTool
+    from llm.stream_events import ToolUse
+
+    target = tmp_path / "probe.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    parent = _make_parent_agent(get_default_registry())
+
+    def _sub_with(hooks):
+        parent._hooks = hooks
+        tool = AgentTool(catalog=None, task_mgr=None, bg_enabled=True)
+        tool.set_parent(parent)
+        return tool._build_sub_agent(_plain_role(), ["read_file"], "main", is_fork=False)
+
+    async def _run_and_collect(sub) -> tuple[str, list[str]]:
+        """跑一次工具，返回 (ToolCallFinished.preview, 写进对话的 tool_result 文本)。
+
+        注意被 hook 拦截时 `_execute_tools` **不产出 ToolCallFinished**（该调用
+        在预检阶段就被记进 results，随后被 `allowed_tus` 过滤掉），但对话历史里
+        仍会补一条 `Error: Blocked by hook: ...` 的 tool_result——否则下一轮 API
+        调用会带着悬空 tool_use。
+        """
+        from conversation.message import MessageRole
+
+        preview = ""
+        async for ev in sub._execute_tools(
+            [ToolUse(id="t", name="read_file", input={"file_path": str(target)})]
+        ):
+            if type(ev).__name__ == "ToolCallFinished":
+                preview = ev.result_preview
+        results = [
+            m.content
+            for m in sub._conversation.messages
+            if m.role == MessageRole.USER and m.tool_use_id
+        ]
+        return preview, results
+
+    # 反证：无 hook → 真的读到了文件内容
+    plain_preview, plain_results = await _run_and_collect(_sub_with(None))
+    assert "hello" in plain_preview, f"无 hook 时 read_file 应成功，实际 {plain_preview!r}"
+    assert plain_results and "hello" in plain_results[-1], (
+        f"无 hook 时对话应写入文件内容，实际 {plain_results!r}"
+    )
+
+    # 有 hook：pre_tool 退出码非 0 = 拦截
+    runner = HookRunner(
+        [
+            HookRule(
+                name="block-all",
+                event="pre_tool",
+                action=HookAction(type="command", command="exit 1"),
+            )
+        ],
+        cwd=Path.cwd(),
+    )
+    hooked_preview, hooked_results = await _run_and_collect(_sub_with(runner))
+    assert hooked_preview == "", f"被拦截的调用不该产出 ToolCallFinished，实际 {hooked_preview!r}"
+    assert hooked_results and hooked_results[-1].startswith("Error: Blocked by hook"), (
+        f"对话里应记下被拦截原因，实际 {hooked_results!r}"
+    )
