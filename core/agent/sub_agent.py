@@ -152,9 +152,7 @@ def arming_approval(agent: Any, parent: Any = None):
                 "避免无限期挂死。",
                 getattr(agent, "_agent_name", None) or "<unnamed>",
                 getattr(policy, "value", policy),
-                "按父的授权范围推导"
-                if parent is not None
-                else "拿不到父，取最保守档",
+                "按父的授权范围推导" if parent is not None else "拿不到父，取最保守档",
             )
         yield
     finally:

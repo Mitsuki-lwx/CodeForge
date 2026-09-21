@@ -195,6 +195,11 @@ class SkillExecutor:
             config=AgentConfig(max_iterations=25),
             runtime=fork_runtime,
         )
+        # 身份名：审批弹窗的来源标注（`HITLRequired.origin`）与 span 归属都读它。
+        # 不设的话，用户跑 `/review` 时弹窗只说"要跑 bash"、**不知道是哪个 skill 要的**
+        # —— 审批上下文不完整就谈不上知情决策（对齐 Copilot CLI 那条）。
+        # 这跟 `AgentTool` 对子 Agent 做的是同一件事，属"来源身份"机制的入口接线。
+        fork_agent.set_agent_name(f"skill:{skill_name}")
 
         try:
             # 复用 SubAgent 统一循环：任务已作为首条 user 消息装填到 fork_conv，

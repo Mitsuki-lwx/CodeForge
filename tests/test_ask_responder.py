@@ -229,9 +229,7 @@ async def test_run_to_completion_does_not_hang_on_bare_agent(tmp_path):
 
             self.calls += 1
             if self.calls == 1:
-                yield ToolUse(
-                    id="c1", name="bash", input={"command": "pytest -q"}
-                )
+                yield ToolUse(id="c1", name="bash", input={"command": "pytest -q"})
             else:
                 yield TextChunk(text="done")
             yield CompletionDone(usage={"input_tokens": 1, "output_tokens": 1})
