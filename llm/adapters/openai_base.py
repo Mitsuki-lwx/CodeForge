@@ -73,6 +73,33 @@ def _as_text_blocks(text: str) -> list[dict]:
     return [{"type": "text", "text": text}] if text else []
 
 
+def _format_tool(tool_def: dict[str, Any]) -> dict[str, Any]:
+    """把内部工具定义转成 OpenAI 的 function 格式。
+
+    **为什么必须转**：内部定义沿用 Anthropic 的键名 —— `Tool.input_schema()`
+    产出的 dict 里是 `input_schema`（见 `core/agent/agent.py::_build_tool_defs`
+    与 `llm/adapters/anthropic.py::_format_tool`，后者要的正是这个键）。
+    而 OpenAI 规范要求 `function.parameters`。
+
+    直接透传的后果是**取决于端点宽容度**：商汤的 `deepseek-v4-flash` 会忽略
+    这个不认识的键、照常工作（所以一直没暴露）；而同一端点上的 `deepseek-flash`
+    会直接回 `inference request is invalid`。实测对照：同一次请求仅把键名换成
+    `parameters` 即成功。
+
+    两种键名都接受（`parameters` 优先、回落 `input_schema`），这样调用方无论
+    传哪种都能发对；缺 schema 时给一个合法的空对象 schema，不留 `null`。
+    """
+    schema = tool_def.get("parameters") or tool_def.get("input_schema")
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_def.get("name", ""),
+            "description": tool_def.get("description", ""),
+            "parameters": schema or {"type": "object", "properties": {}},
+        },
+    }
+
+
 def _to_openai_wire(m: APIMessage) -> list[dict]:
     """把内部消息转换为 OpenAI wire format。
 
@@ -187,7 +214,7 @@ class OpenAIConversationAdapter(Adapter):
         }
 
         if tools:
-            body["tools"] = [{"type": "function", "function": t} for t in tools]
+            body["tools"] = [_format_tool(t) for t in tools]
 
         return body
 
