@@ -140,7 +140,7 @@ class AgentTool(Tool):
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override: 'haiku', 'sonnet', 'opus', or 'inherit'.",
+                    "description": "Optional model override: 'inherit' (same as parent), a concrete model name, or an alias the provider maps via model_aliases (e.g. 'haiku').",
                 },
                 "run_in_background": {
                     "type": "boolean",
@@ -425,7 +425,7 @@ class AgentTool(Tool):
             allowed: 过滤后的工具名列表。
             session_id: 父会话 ID。
             wt_session: 可选的 WorktreeSession；非空时子 Agent 工作在隔离目录。
-            model: 子 Agent 模型（'haiku'/'sonnet'/'opus'/'inherit'；空=继承父）。
+            model: 子 Agent 模型（'inherit'=随父；或具体模型名 / provider 配了映射的别名）。
         """
         from pathlib import Path
 

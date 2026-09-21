@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -14,6 +14,10 @@ class ProviderConfig:
     context_window: int = 0  # 上下文窗口大小（token），0 表示走协议默认
     vendor: str | None = None  # 上游厂商（deepseek/openai/anthropic…；None=自动识别）
     tier: str = ""  # 路由价位标记：cheap=便宜（入口复杂度判断用，见 spec_router）；留空=不参与路由
+    # 模型别名 → 具体模型名（见 spec_model_resolution）。
+    # 让角色 / Skill 用语义档位（haiku/sonnet/opus）声明而不绑定厂商；
+    # 别名表按 provider 独立，未配的保留别名会退回主模型并告警。
+    model_aliases: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

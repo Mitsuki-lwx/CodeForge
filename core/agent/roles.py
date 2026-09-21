@@ -22,8 +22,17 @@ logger = logging.getLogger(__name__)
 # name 允许大小写字母开头，后续可含字母/数字/连字符/下划线，长度 1-32
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-_]{0,31}$")
 
-# 有效的 model 值
-_VALID_MODELS = frozenset({"haiku", "sonnet", "opus", "inherit"})
+# model 取值只做**格式**校验，不再维护固定白名单（见 spec_model_resolution）。
+#
+# 原白名单 `{haiku, sonnet, opus, inherit}` 有两个问题：它放行了三个 Anthropic
+# 别名，而全项目**没有任何"别名 → 实际模型"的映射表**（内置 `explore.md` 的
+# `model: haiku` 因此被原样发给 API，报 `model is not found`）；同时它把**具体
+# 模型名**（如 `deepseek-v4-flash`）挡在外面，静默退回 `inherit` —— 方向正好是
+# 反的。
+#
+# 现在：角色层只判断"这是不是一个合法的模型名"，**怎么解析交给
+# `llm.client.resolve_model_name`**（别名映射 / 保留别名回退都在那里）。
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]*$")
 
 # 有效的 permissionMode → PermissionMode 映射
 _PERMISSION_MODE_MAP: dict[str, PermissionMode] = {
@@ -59,7 +68,7 @@ class AgentRole:
     description: str = ""
     tools: list[str] = field(default_factory=list)          # frontmatter.tools 白名单
     disallowed_tools: list[str] = field(default_factory=list)  # frontmatter.disallowedTools
-    model: str = "inherit"                                    # haiku / sonnet / opus / inherit
+    model: str = "inherit"  # 'inherit' 或具体模型名；保留别名需 provider 配 model_aliases
     max_turns: int = 0                                        # 0 = 沿用全局默认
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     dont_ask: bool = False                                    # 子 Agent 专属：自动批准 Ask 决策
@@ -246,16 +255,23 @@ def _build_role(
             return None
 
     # --- model (可选) ---
+    # 只校验格式 + 识别 `inherit`；**不再**把不认识的名称退回 `inherit`。
+    # 具体模型名（如 `deepseek-v4-flash`）原样保留 —— 解析交给
+    # `llm.client.resolve_model_name`（别名映射、无映射的保留别名回退都在那里）。
+    # 这里静默改名会把用户写的东西丢掉，且只落一条 stderr。
     model = fm.get("model", "inherit")
     if model is None:
         model = "inherit"
     if not isinstance(model, str):
         _warn("'model' must be a string")
         return None
-    model = model.strip().lower()
-    if model not in _VALID_MODELS:
+    model = model.strip()
+    if not model:
+        model = "inherit"
+    elif not _MODEL_RE.match(model):
         print(
-            f"subagent {file_path}: unknown model '{model}', defaulting to 'inherit'",
+            f"subagent {file_path}: invalid model name '{model}', "
+            f"defaulting to 'inherit'",
             file=sys.stderr,
         )
         model = "inherit"

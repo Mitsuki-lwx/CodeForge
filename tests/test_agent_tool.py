@@ -449,18 +449,28 @@ def test_defined_role_subagent_keeps_own_permission():
 
 
 def test_subagent_model_override_applied():
-    """子代理指定非 inherit 模型 → 其客户端 config.model 被覆盖。"""
+    """子代理指定模型 → 客户端 config.model 被覆盖；别名经 provider 映射解析。
+
+    旧版断言的是 `model="haiku"` 会**原样**出现在 `client.config` 里 —— 那正是
+    缺陷本身：项目没有任何"别名 → 实际模型"映射表，于是 `haiku` 被当模型名发往
+    API，实测稳定返回 `model is not found`（内置 Explore 角色即如此）。
+    现在解析统一走 `llm.client.resolve_model_name`（spec_model_resolution）。
+    """
     from config.model import ProviderConfig
+    from conversation.manager import ConversationManager
     from core.agent.agent import Agent
     from core.agent.config import AgentConfig
     from core.agent.runtime import SessionRuntime
-    from conversation.manager import ConversationManager
     from core.tool.context import ExecutionContext
     from core.tool.tools.agent_tool import AgentTool
 
     registry = _make_registry()
     parent_client = ProviderConfig(
-        name="t", protocol="anthropic", model="parent-model", api_key="sk-x"
+        name="t",
+        protocol="anthropic",
+        model="parent-model",
+        api_key="sk-x",
+        model_aliases={"haiku": "cheap-model"},
     )
     parent = Agent(
         registry=registry,
@@ -476,15 +486,54 @@ def test_subagent_model_override_applied():
     tool.set_parent(parent)
 
     allowed = [t.name() for t in registry.list()]
-    # 指定 haiku 模型
-    sub = tool._build_sub_agent(
-        None, allowed, "main", is_fork=False, model="haiku"
+    # 配了别名映射 → `haiku` 解析成映射目标（不是别名本身）
+    sub = tool._build_sub_agent(None, allowed, "main", is_fork=False, model="haiku")
+    assert sub._client.config.model == "cheap-model"
+
+    # 具体模型名 → 原样使用（不再被静默换成 inherit）
+    sub_concrete = tool._build_sub_agent(
+        None, allowed, "main", is_fork=False, model="some-concrete-model"
     )
-    assert sub._client.config.model == "haiku"
+    assert sub_concrete._client.config.model == "some-concrete-model"
 
     # 不指定（inherit）→ 继承父模型
     sub_inherit = tool._build_sub_agent(None, allowed, "main", is_fork=False, model="")
     assert sub_inherit._client.config.model == "parent-model"
+
+
+def test_subagent_alias_without_mapping_falls_back_to_parent():
+    """保留别名但 provider 没配 `model_aliases` → 退回父模型（而非发出去撞 404）。
+
+    这是本次修的核心缺陷：无映射表时 `haiku` 被当模型名发往 API。退回父模型是
+    **有意的降级**，并且会打印告警说明缺什么配置 —— 不静默改意图，也不让它 404。
+    """
+    from config.model import ProviderConfig
+    from conversation.manager import ConversationManager
+    from core.agent.agent import Agent
+    from core.agent.config import AgentConfig
+    from core.agent.runtime import SessionRuntime
+    from core.tool.context import ExecutionContext
+    from core.tool.tools.agent_tool import AgentTool
+
+    registry = _make_registry()
+    parent = Agent(
+        registry=registry,
+        llm_client=__import__("llm.client", fromlist=["LLMClient"]).LLMClient.create(
+            ProviderConfig(
+                name="t", protocol="anthropic", model="parent-model", api_key="sk-x"
+            )
+        ),
+        exec_ctx=ExecutionContext(cwd=Path.cwd(), session_id="main"),
+        conversation=ConversationManager(),
+        config=AgentConfig(max_iterations=5),
+        runtime=SessionRuntime(),
+    )
+    tool = AgentTool(catalog=load_catalog("."), task_mgr=None, bg_enabled=True)
+    tool.set_parent(parent)
+
+    allowed = [t.name() for t in registry.list()]
+    sub = tool._build_sub_agent(None, allowed, "main", is_fork=False, model="haiku")
+    assert sub._client.config.model == "parent-model"
 
 
 # ── 回归：前台子 Agent 同步 await（对齐参考 mewcode，消除 sleep 轮询）──

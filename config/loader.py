@@ -14,6 +14,45 @@ VALID_PROTOCOLS = {"anthropic", "openai"}
 KNOWN_VENDORS = {"anthropic", "openai", "deepseek"}
 
 
+def _parse_model_aliases(raw: dict, index: int) -> dict[str, str]:
+    """解析 provider 的 `model_aliases`（别名 → 具体模型名，见 spec_model_resolution）。
+
+    **宽松处理**：非映射、别名非字符串、目标非字符串，都只告警并跳过该项，
+    **不阻断启动** —— 与 `vendor` / `tier` 的既有姿势一致。一个笔误不该让整个
+    客户端起不来；而且这里错了的后果是"别名没解析"，不是"用错模型"。
+    """
+    value = raw.get("model_aliases")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        print(
+            f"警告：providers[{index}]：'model_aliases' 必须是映射"
+            f"（别名: 模型名），已整体忽略。",
+            file=sys.stderr,
+        )
+        return {}
+
+    result: dict[str, str] = {}
+    for alias, target in value.items():
+        if not isinstance(alias, str) or not alias.strip():
+            print(
+                f"警告：providers[{index}]：'model_aliases' 的别名 {alias!r} 非法，"
+                f"已忽略该项。",
+                file=sys.stderr,
+            )
+            continue
+        if not isinstance(target, str) or not target.strip():
+            print(
+                f"警告：providers[{index}]：'model_aliases.{alias}' 的目标 "
+                f"{target!r} 非法，已忽略该项。",
+                file=sys.stderr,
+            )
+            continue
+        # 别名统一小写：角色解析侧会把 model 名 `.lower()`，两边要对得上。
+        result[alias.strip().lower()] = target.strip()
+    return result
+
+
 def _validate_providers(providers: list[dict]) -> list[ProviderConfig]:
     """校验原始字典列表并转为 ProviderConfig 列表。"""
     if not providers:
@@ -69,6 +108,7 @@ def _validate_providers(providers: list[dict]) -> list[ProviderConfig]:
                 context_window=int(raw.get("context_window", 0)),
                 vendor=vendor,
                 tier=str(raw.get("tier", "") or ""),
+                model_aliases=_parse_model_aliases(raw, i),
             )
         )
 

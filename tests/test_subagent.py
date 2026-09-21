@@ -77,11 +77,32 @@ body
     assert not role.dont_ask
 
 
-def test_parse_role_invalid_model_fallback():
+def test_parse_role_concrete_model_name_preserved():
+    """具体模型名原样保留（不再像旧版那样被静默换成 `inherit`）。
+
+    旧行为：不在白名单 `{haiku, sonnet, opus, inherit}` 里的值一律退回 `inherit`
+    —— 于是 `model: deepseek-v4-flash` 会被无声丢掉，只落一条 stderr。
+    现在角色层只做**格式**校验；解析（别名映射 / 回退）统一由
+    `llm.client.resolve_model_name` 负责（spec_model_resolution）。
+    """
     md = b"""---
 name: bad
-description: bad model
-model: gpt-4
+description: concrete model
+model: deepseek-v4-flash
+---
+body
+"""
+    role = parse_role_bytes(md, "t.md", Source.USER)
+    assert role is not None
+    assert role.model == "deepseek-v4-flash"
+
+
+def test_parse_role_invalid_model_name_falls_back():
+    """含非法字符的模型名 → 退回 `inherit`（格式校验拦下，不被发出去撞 400）。"""
+    md = b"""---
+name: bad
+description: bad model name
+model: "bad name"
 ---
 body
 """
