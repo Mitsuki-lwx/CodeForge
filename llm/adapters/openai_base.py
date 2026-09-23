@@ -17,6 +17,7 @@ from typing import Any
 
 from conversation.message import APIMessage
 from llm.adapters.base import Adapter
+from llm.adapters.registry import register_adapter
 from llm.stream_events import (
     CompletionDone,
     StreamEvent,
@@ -167,6 +168,11 @@ def _to_openai_wire(m: APIMessage) -> list[dict]:
     return [entry]
 
 
+@register_adapter(
+    "openai",
+    priority=0,  # 该协议的**默认实现**：更具体的规则（vendor 精确 / 端点启发式）优先
+    client="llm.openai_client.OpenAIClient",
+)
 class OpenAIConversationAdapter(Adapter):
     """OpenAI Chat Completions wire + 解析（不含 thinking 特有行为）。"""
 

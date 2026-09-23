@@ -121,18 +121,19 @@ class LLMClient(ABC):
 
     @classmethod
     def create(cls, config: ProviderConfig) -> LLMClient:
-        """工厂：按 protocol + vendor 协商出匹配的客户端实现。"""
-        from llm.protocol import resolve_adapter_class
+        """工厂：按 protocol + vendor 协商出匹配的客户端实现。
+
+        "哪个协议由哪个客户端实现驱动"由**注册表**声明
+        （`@register_adapter(..., client="...")`），不再靠
+        `adapter_cls.__name__.startswith("Anthropic")` 这种类名前缀判断 ——
+        否则加一个协议仍然要改这里，而且改个类名就会失灵。
+        """
+        from llm.protocol import resolve_adapter_class, resolve_client
 
         adapter_cls = resolve_adapter_class(
             config.protocol, config.vendor, config.model, config.base_url
         )
-        if adapter_cls.__name__.startswith("Anthropic"):
-            from llm.anthropic_client import AnthropicClient
-            return AnthropicClient(config)
-        else:
-            from llm.openai_client import OpenAIClient
-            return OpenAIClient(config)
+        return resolve_client(adapter_cls)(config)
 
     @classmethod
     def create_with_model(cls, config: ProviderConfig, model: str) -> LLMClient:

@@ -13,6 +13,7 @@ from typing import Any
 
 from conversation.message import APIMessage
 from llm.adapters.base import Adapter
+from llm.adapters.registry import register_adapter
 from llm.stream_events import (
     CompletionDone,
     StreamEvent,
@@ -87,6 +88,11 @@ def _mark_last_message_cacheable(api_messages: list[dict[str, Any]]) -> None:
         blocks[-1]["cache_control"] = {"type": "ephemeral"}
 
 
+@register_adapter(
+    "anthropic",
+    priority=1000,  # 协议一级判别：anthropic 恒走本适配器，vendor 不改 wire
+    client="llm.anthropic_client.AnthropicClient",
+)
 class AnthropicAdapter(Adapter):
     """Anthropic Messages wire + 解析。"""
 
