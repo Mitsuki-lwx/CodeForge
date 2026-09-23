@@ -320,7 +320,11 @@ class SendMessageTool(_TeamBoundMixin, Tool):
     def description(self) -> str:
         return (
             "Send a message to a teammate by name or agent id (to='*' broadcasts). "
-            "Text messages require a 5-10 word summary."
+            "Text messages require a 5-10 word summary. "
+            "By default the recipient is woken up and may run a turn; pass "
+            "notify=false to leave the message in their mailbox WITHOUT waking "
+            "them — use that to keep them informed rather than assign work "
+            "(they will read it next time they are active)."
         )
 
     def input_schema(self) -> dict:
@@ -332,6 +336,14 @@ class SendMessageTool(_TeamBoundMixin, Tool):
                 "message": {"type": "string"},
                 "message_type": {"type": "string", "enum": sorted(VALID_MESSAGE_TYPES)},
                 "metadata": {"type": "object"},
+                "notify": {
+                    "type": "boolean",
+                    "description": (
+                        "Default true = deliver AND wake the recipient. "
+                        "false = deliver only, do not wake (message stays in their "
+                        "mailbox until they are active next)."
+                    ),
+                },
             },
             "required": ["to"],
         }
@@ -363,6 +375,9 @@ class SendMessageTool(_TeamBoundMixin, Tool):
             return ToolResult(success=False, error=f"未找到团队 '{self._team_name}'")
 
         to = input.get("to", "")
+        # `notify=False` = 只投递、不唤醒（spec_team_notify）。缺省 true，
+        # 保证既有调用点语义逐字不变。
+        notify = bool(input.get("notify", True))
         msg = Message(
             from_=self._from_agent_name or self._from_agent_id,
             to=to,
@@ -383,6 +398,12 @@ class SendMessageTool(_TeamBoundMixin, Tool):
                 targets.append(team.lead_agent_id)
             for aid in targets:
                 await mailbox.write(aid, msg)
+            if not notify:
+                # 投递进各自信箱，但不唤醒：等对方下次活跃自己读到。
+                return ToolResult(
+                    success=True,
+                    data=f"消息已广播给 {len(targets)} 人（未唤醒）",
+                )
             await self._wake_many(targets)
             return ToolResult(success=True, data=f"消息已广播给 {len(targets)} 人")
 
@@ -393,9 +414,14 @@ class SendMessageTool(_TeamBoundMixin, Tool):
             )
         delivered = {"delivered_to": [target_id]}
         await mailbox.write(target_id, msg)
-        await self._wake_one(target_id)
-        # F46：in-process 目标已 stop 时 → 从会话恢复续派
-        await self._maybe_resume(target_id, msg.content)
+        if notify:
+            await self._wake_one(target_id)
+            # F46：in-process 目标已 stop 时 → 从会话恢复续派
+            await self._maybe_resume(target_id, msg.content)
+        else:
+            # 只在"没唤醒"时多带一个字段 —— 默认路径的返回值与本改动之前
+            # 逐字一致（既有调用方与测试不受影响）。
+            delivered["notified"] = False
         return ToolResult(success=True, data=delivered)
 
     async def _maybe_resume(self, agent_id: str, content: str) -> None:

@@ -206,3 +206,105 @@ async def test_send_message_broadcast(tmp_path):
     box = Box(mgr.team.mailbox_dir)
     assert len(await box.read("agent-a")) == 1
     assert len(await box.read("agent-b")) == 1
+
+
+# ── notify=false：只告知，不唤醒（spec_team_notify）────────────────────
+#
+# 把"唤醒"当成一个**可观测的副作用**来断言：patch 掉 `_wake_one` /
+# `_maybe_resume` 记录调用，而不是去看后端有没有真的被唤醒
+# （那样依赖 pane 后端环境，本机跑不起来）。
+
+
+def _spy_wake(sm, monkeypatch) -> list:
+    calls: list = []
+
+    async def _rec_wake(agent_id):
+        calls.append(("wake", agent_id))
+
+    async def _rec_resume(agent_id, content):
+        calls.append(("resume", agent_id))
+
+    monkeypatch.setattr(sm, "_wake_one", _rec_wake)
+    monkeypatch.setattr(sm, "_maybe_resume", _rec_resume)
+    return calls
+
+
+def _two_member_manager(tmp_path):
+    mgr = _FakeManager(tmp_path)
+    mgr.team.members = [
+        TeammateInfo(name="lead", agent_id="lead"),
+        TeammateInfo(name="alice", agent_id="agent-a"),
+    ]
+    mgr.registry_names["alice"] = "agent-a"
+    return mgr
+
+
+async def test_send_message_default_still_wakes(tmp_path, monkeypatch):
+    """不传 `notify` → 与改动之前完全一致（唤醒 + 续派）。这条是零回归锁。"""
+    mgr = _two_member_manager(tmp_path)
+    sm = SendMessageTool(mgr, "demo", "lead", "lead")
+    calls = _spy_wake(sm, monkeypatch)
+
+    res = await sm.execute(None, {"to": "alice", "message": "hello", "summary": "say hi"})
+    assert res.success
+    assert calls == [("wake", "agent-a"), ("resume", "agent-a")]
+    # 默认路径**不**多出 notified 字段（返回值与旧版逐字一致）
+    assert "notified" not in res.data
+
+
+async def test_send_message_notify_false_delivers_without_waking(tmp_path, monkeypatch):
+    """`notify=false` → 消息进信箱，但不唤醒、不续派。"""
+    mgr = _two_member_manager(tmp_path)
+    sm = SendMessageTool(mgr, "demo", "lead", "lead")
+    calls = _spy_wake(sm, monkeypatch)
+
+    res = await sm.execute(
+        None, {"to": "alice", "message": "FYI", "summary": "just fyi", "notify": False}
+    )
+    assert res.success
+    assert calls == []  # 既没唤醒也没续派
+    assert res.data.get("notified") is False
+
+    # **消息没丢**：在收件人信箱里
+    box = Box(mgr.team.mailbox_dir)
+    msgs = await box.read("agent-a")
+    assert len(msgs) == 1
+    assert msgs[0].content == "FYI"
+
+
+async def test_send_message_broadcast_notify_false(tmp_path, monkeypatch):
+    mgr = _FakeManager(tmp_path)
+    mgr.team.members = [
+        TeammateInfo(name="lead", agent_id="lead"),
+        TeammateInfo(name="alice", agent_id="agent-a"),
+        TeammateInfo(name="bob", agent_id="agent-b"),
+    ]
+    sm = SendMessageTool(mgr, "demo", "lead", "lead")
+    calls: list = []
+
+    async def _rec_many(ids):
+        calls.append(("wake_many", tuple(ids)))
+
+    monkeypatch.setattr(sm, "_wake_many", _rec_many)
+
+    res = await sm.execute(
+        None, {"to": "*", "message": "hi", "summary": "broadcast", "notify": False}
+    )
+    assert res.success
+    assert calls == []
+    box = Box(mgr.team.mailbox_dir)
+    # 两个人**都收到了**
+    assert len(await box.read("agent-a")) == 1
+    assert len(await box.read("agent-b")) == 1
+
+
+def test_send_message_schema_exposes_optional_notify(tmp_path):
+    """参数要暴露给模型，且必须是**可选**的（否则既有调用点会被逼着传）。"""
+    mgr = _FakeManager(tmp_path)
+    sm = SendMessageTool(mgr, "demo", "lead", "lead")
+    schema = sm.input_schema()
+    assert "notify" in schema["properties"]
+    assert schema["properties"]["notify"]["type"] == "boolean"
+    assert "notify" not in schema.get("required", [])
+    # description 要讲清默认行为，模型才敢在"只告知"时用它
+    assert "notify=false" in sm.description()
