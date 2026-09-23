@@ -82,6 +82,26 @@ features:
     # 只读工具本来就不询问、不受本策略影响；计划确认等交互式工具任何档位都拒。
     # 子 Agent（fork / 队友）继承父的这一档，不会自己升级成全放行。
 
+  # ── 审批审查后端 ──
+  # 只在无人值守的 review 档下生效（上面的 unattended_policy: review）。
+  #   backend: llm（默认）= 调 chat 模型 + 解析 JSON 输出（core/permissions/reviewer.py）
+  #            jev        = 用 Jev（TypeSafe System One）决策模型
+  #                         （core/permissions/jev_reviewer.py）—— 它**不生成文本**，
+  #                         直接返回带概率的结构化判定（Choice/Score/Noul），
+  #                         reason 由代码按数值拼出，比自由文本更可复查。
+  # ⚠️ Jev 实测延迟 1.2–9.7s（偶发 >90s）—— 审查阻塞在工具执行路径上，所以超时
+  #    默认 15s，超时一律按拒绝处理（fail-closed）。
+  # ⚠️ api_key 为空时自动回落到 llm 后端（不会变成"没有审查者"而挂死在人工审批上）。
+  # ⚠️ 真实 key 不要写进本文件（**本文件进版本控制**）—— 写 config.yaml，它已被
+  #    .gitignore 忽略。key 从 console.typesafe.ai 获取。
+  approval_review:
+    backend: "llm"
+    jev:
+      url: "https://api.typesafe.ai/v1/systemone"
+      api_key: ""            # 留空 = 不用 jev 后端
+      model: "jev-latest"
+      timeout_s: 15
+
 # ── Agent 循环策略 ──
 # "react"（默认）或自定义模块路径（spec_loop）
 loop: ""

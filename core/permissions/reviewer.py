@@ -117,11 +117,17 @@ class ReviewOutcome:
 
     `reason` 在 `allowed=False` 时必须是**可读且可归因**的 —— 用户与父 Agent
     都靠它理解"为什么没放行"，而"审查拒绝"与"审查根本没跑起来"要能区分开。
+
+    `confidence` 是**判断的把握程度**（0–1），与 `risk`（操作的风险等级）不是一回事：
+    只有能给出概率分布的后端（如 Jev）填得出来，LLM 后端保持 None。
+    **当前不参与决策** —— 只为后续"高置信放行 / 中置信问人 / 低置信拒绝"的分档
+    积累数据（见 `docs/spec_jev_reviewer.md` 的非目标一节）。
     """
 
     allowed: bool
     risk: str = ""
     reason: str = ""
+    confidence: float | None = None
 
 
 @dataclass
@@ -143,8 +149,16 @@ def _clip(value: Any, limit: int = MAX_FIELD_CHARS) -> str:
     return text[:limit] + (f"…（截断，共 {len(text)} 字符）" if len(text) > limit else "")
 
 
-def build_review_input(ctx: ReviewContext) -> str:
-    """把上下文拼成给审查者的 user 消息。"""
+def build_review_input(
+    ctx: ReviewContext, *, include_output_instruction: bool = True
+) -> str:
+    """把上下文拼成给审查者的 user 消息。
+
+    `include_output_instruction=False` 时**去掉末尾"给出 JSON 结论"那句** ——
+    Jev 这类决策模型的答案类型由**问题定义**决定，不需要（也不该看到）输出格式
+    指令，带着那句反而会把它往"生成 JSON"上带。两个后端共用同一段上下文拼装，
+    保证**输入一致**、便于对照。
+    """
     parts = [
         "## 待审操作",
         f"- 工具：{ctx.tool_name}",
@@ -161,7 +175,8 @@ def build_review_input(ctx: ReviewContext) -> str:
             parts.append(f"{i}. {_clip(msg, 400)}")
     else:
         parts.append("\n## 用户最近的请求（授权来源）\n(取不到 —— 没有明确授权时从严判断)")
-    parts.append("\n请按策略给出 JSON 结论。")
+    if include_output_instruction:
+        parts.append("\n请按策略给出 JSON 结论。")
     return "\n".join(parts)
 
 

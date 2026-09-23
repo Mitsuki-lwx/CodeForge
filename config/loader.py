@@ -182,6 +182,9 @@ def load_config_full(path: str | Path = "config.yaml") -> tuple[list[ProviderCon
         raw_host = raw_features.get("host", None)
         if isinstance(raw_host, dict):
             features.host = _parse_host_config(raw_host)
+        raw_review = raw_features.get("approval_review", None)
+        if isinstance(raw_review, dict):
+            features.approval_review = _parse_approval_review_config(raw_review)
     return providers, features
 
 
@@ -236,6 +239,68 @@ def _parse_host_config(raw: dict) -> object:
         token_file=token_file,
         unattended_policy=policy,
     )
+
+
+def _parse_approval_review_config(raw: dict) -> object:
+    """解析 `features.approval_review`（审批审查的后端选择）。
+
+    非法值一律**告警并退回 `llm`（现有行为）**，不阻断启动。注意退回的**不是"关掉
+    审查"** —— 没有审查者的 `REVIEW` 档会落到无人应答的人工 HITL 上挂死，
+    所以"配置写错"的安全落点永远是"用回原来那个后端"。
+
+    `backend="jev"` 但缺 api_key 时同样回落 llm 并明确告警：用户以为在用 Jev，
+    实际在用 LLM —— 这种事必须说出来。
+    """
+    from config.model import ApprovalReviewConfig, JevConfig
+
+    backend = str(raw.get("backend", "") or "llm").strip().lower()
+    if backend not in ("llm", "jev"):
+        print(
+            f"警告：features.approval_review.backend='{backend}' 不是有效取值"
+            "（可选 ['llm', 'jev']），已按 'llm' 处理。",
+            file=sys.stderr,
+        )
+        backend = "llm"
+
+    jev = None
+    raw_jev = raw.get("jev", None)
+    if isinstance(raw_jev, dict):
+        try:
+            timeout_s = float(
+                raw_jev.get("timeout_s", JevConfig.timeout_s) or JevConfig.timeout_s
+            )
+        except (TypeError, ValueError):
+            print(
+                "警告：features.approval_review.jev.timeout_s 不是数字，"
+                f"已按 {JevConfig.timeout_s} 处理。",
+                file=sys.stderr,
+            )
+            timeout_s = JevConfig.timeout_s
+        if timeout_s <= 0:
+            print(
+                f"警告：features.approval_review.jev.timeout_s={timeout_s} 必须为正，"
+                f"已按 {JevConfig.timeout_s} 处理。",
+                file=sys.stderr,
+            )
+            timeout_s = JevConfig.timeout_s
+
+        jev = JevConfig(
+            url=str(raw_jev.get("url", "") or JevConfig.url).strip(),
+            api_key=str(raw_jev.get("api_key", "") or "").strip(),
+            model=str(raw_jev.get("model", "") or JevConfig.model).strip(),
+            timeout_s=timeout_s,
+        )
+
+    if backend == "jev" and (jev is None or not jev.api_key):
+        print(
+            "警告：features.approval_review.backend='jev' 但未提供 "
+            "features.approval_review.jev.api_key，已回落到 'llm' 后端"
+            "（功能仍可用，但用的不是 Jev）。",
+            file=sys.stderr,
+        )
+        backend = "llm"
+
+    return ApprovalReviewConfig(backend=backend, jev=jev)
 
 
 def _default_features():

@@ -45,6 +45,34 @@ class HostConfig:
 
 
 @dataclass
+class JevConfig:
+    """Jev（TypeSafe System One）决策模型的连接信息（`features.approval_review.jev`）。
+
+    **刻意不是 `ProviderConfig`** —— Jev 不是 chat 模型（无流式、无对话历史、
+    无工具调用），契约完全不同，所以单独一段配置，不塞进 `providers` 列表。
+    """
+
+    url: str = "https://api.typesafe.ai/v1/systemone"
+    api_key: str = ""  # 空 = jev 后端不可用（装配时告警并回落 llm）
+    model: str = "jev-latest"
+    timeout_s: float = 15.0  # 实测延迟 1.2–9.7s（偶发 >90s）→ 15s 覆盖实测最慢
+
+
+@dataclass
+class ApprovalReviewConfig:
+    """审批审查的后端选择（`features.approval_review`）。
+
+    - `backend="llm"`（默认）：现有行为 —— 调 chat 模型 + 解析 JSON 输出
+    - `backend="jev"`：改用 Jev 决策模型（见 `docs/spec_jev_reviewer.md`）
+
+    整段不配与 `backend="llm"` 等价 → **不配就没有任何行为变化**。
+    """
+
+    backend: str = "llm"
+    jev: JevConfig | None = None
+
+
+@dataclass
 class FeaturesConfig:
     """功能开关（团队系统等）。"""
 
@@ -53,3 +81,4 @@ class FeaturesConfig:
     router: RouterConfig | None = None
     loop: str = ""  # Agent 循环策略（spec_loop）：react 或自定义模块路径
     host: HostConfig | None = None  # 会话宿主（features.host）
+    approval_review: ApprovalReviewConfig | None = None  # 审批审查后端
