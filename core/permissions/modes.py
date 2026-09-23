@@ -54,11 +54,18 @@ class UnattendedPolicy(str, Enum):
     刻意**不提供** `allow_readonly` 档：只读工具在权限矩阵里本来就是 `allow`
     （从不进入 `ask`），于是「只放只读」与 `deny_all` 的行为完全一致——是个
     名不副实的冗余档，写出来只会让人误以为多了一层保护。
+
+    而 `REVIEW` **不是**冗余档：`deny_all` 与 `allow_write` 都只按**类别**粗粒度
+    代答，`REVIEW` 是唯一按**具体内容**判断的档位（交一次独立的模型审查）。
     """
 
     ALLOW_ALL = "allow_all"  # 全部放行（等价旧的 dontAsk 语义）
     ALLOW_WRITE = "allow_write"  # 放行读与写，命令执行仍拒
     DENY_ALL = "deny_all"  # ask 一律拒绝（默认，与无策略时的保守行为一致）
+    # 交给独立的模型审查逐个判断（见 core/permissions/reviewer.py、spec_approval_review）。
+    # **保持 `ask` 不变、不在本层代答** —— 审查需要调模型（异步）且要完整上下文，
+    # 由 `Agent._execute_tools` 的 ask 分支处理；`unattended_decide` 只认前三档。
+    REVIEW = "review"
 
 
 # 任何无人值守策略下都必须拒绝的交互式工具：它们存在的意义就是向人索取决策，
@@ -71,7 +78,15 @@ INTERACTIVE_TOOLS: frozenset[str] = frozenset(
 def unattended_decide(
     policy: UnattendedPolicy, category: ToolCategory
 ) -> DecisionEffect:
-    """按无人值守策略把 `ask` 级决策代答为 allow / deny（绝不返回 ask）。"""
+    """按无人值守策略把 `ask` 级决策代答为 allow / deny（绝不返回 ask）。
+
+    **`REVIEW` 档不在这里处理**：它的语义是"保持 `ask`、交给审查层"，
+    而本函数的契约是**绝不返回 ask**。调用方（`Agent._check_tool_permission`）
+    会先特判 `REVIEW` 并原样放行决策。
+
+    万一 `REVIEW` 被直接送进来，会落到末尾的 `return "deny"` —— 那是刻意的
+    保守兜底：宁可拒绝，也不要因为"没人实现这条分支"而误放行。
+    """
     if policy is UnattendedPolicy.ALLOW_ALL:
         return "allow"
     if policy is UnattendedPolicy.ALLOW_WRITE:

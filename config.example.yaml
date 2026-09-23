@@ -71,9 +71,14 @@ features:
                             #    免得你以为凭据已经挪出项目目录而其实没有。
     unattended_policy: deny_all
     # ↑ 无人环境里没有按键的人，`ask` 级工具决策由谁代答：
-    #   deny_all    一律拒绝（默认，最保守）
-    #   allow_write 另放行写文件 —— 需要 agent 真的改代码时用
-    #   allow_all   全部放行
+    #   deny_all    一律拒绝（默认，最保守 —— 代价是 agent 几乎干不了活）
+    #   review      **交给一个独立的模型审查逐个判断**（推荐用于真要让 agent 干活时）
+    #               比 allow_write 细：按**具体内容**判而不是按类别；高风险操作仍拒、
+    #               低风险写操作放行。策略见 core/permissions/reviewer.py::REVIEW_POLICY。
+    #               代价：每个 ask 多一次模型调用（走 model_aliases.haiku 那个便宜档）；
+    #               审查自身故障/超时一律按拒绝处理（fail-closed）。
+    #   allow_write 另放行写文件（按类别，不看内容）
+    #   allow_all   全部放行（危险）
     # 只读工具本来就不询问、不受本策略影响；计划确认等交互式工具任何档位都拒。
     # 子 Agent（fork / 队友）继承父的这一档，不会自己升级成全放行。
 

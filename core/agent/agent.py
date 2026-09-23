@@ -63,6 +63,7 @@ from core.permissions.modes import (
     UnattendedPolicy,
     unattended_decide,
 )
+from core.permissions.reviewer import ReviewContext
 from core.permissions.rules import RuleEngine, extract_content
 from core.permissions.sandbox import PathSandbox
 from core.prompts.builder import PromptBuilder
@@ -179,6 +180,9 @@ class Agent:
         # None = 不启用（TUI 等有人值守路径的默认）。
         self._unattended_policy: UnattendedPolicy | None = None
         self._approval_upgrader = approval_upgrader
+        # 审批自动审查者（可选）：`REVIEW` 档下由它逐个判断 `ask` 级决策。
+        # None = 不启用（其余档位与有人值守路径都不需要它，行为不变）。
+        self._approval_reviewer: Any = None
 
         # ── Permission system ──
         self._sandbox = PathSandbox(work_dir=str(exec_ctx.cwd))
@@ -418,6 +422,16 @@ class Agent:
     @property
     def unattended_policy(self) -> UnattendedPolicy | None:
         return self._unattended_policy
+
+    def set_approval_reviewer(self, reviewer: Any) -> None:
+        """挂上审批自动审查者（`REVIEW` 档用，见 spec_approval_review）。
+
+        只在 `unattended_policy is REVIEW` 时生效；`None` 表示不启用。
+        审查者在 `_execute_tools` 的 ask 分支被调用 —— 它需要**异步**地
+        调一次模型，所以不能像其它档位那样在同步的 `_check_tool_permission`
+        里代答。
+        """
+        self._approval_reviewer = reviewer
 
     def toggle_plan_mode(self) -> PlanMode:
         """切换 Plan Mode 开关。"""
@@ -1206,6 +1220,31 @@ class Agent:
                 else:
                     # 原因必须可读：父要靠它向用户解释"这步为什么没做成"。
                     results[tu.id] = (False, outcome.reason, 0, {})
+            elif decision.effect == "ask" and self._should_review_approval():
+                # ── 审批自动审查（`REVIEW` 档，见 spec_approval_review）──
+                # 顺序要紧：**能问人时优先问人**（人的判断最准），只有确实没人可问
+                # 才轮到审查者 —— 所以这条必须排在"冒泡"之后、人工 HITL 之前。
+                # （第一版把两条写反了，探针 `verify_review_seam.py` 用例 C 抓到：
+                #   有冒泡通道时审查者仍被调用。）
+                # 审查是独立的一次模型调用，任何失败都 fail-closed（reviewer 内兜底）。
+                # 类别要在这里现算：`_execute_tools` 没有 `_check_tool_permission`
+                # 里的那个 `tc`（审查需要它的粒度来提示风险）。
+                _is_read, tc = self._tool_category(tu)
+                outcome = await self._approval_reviewer.review(
+                    ReviewContext(
+                        tool_name=tu.name,
+                        tool_input=tu.input,
+                        category=tc,
+                        permission_reason=decision.reason,
+                        cwd=str(self._exec_ctx.cwd),
+                        user_intent=self._recent_user_messages(),
+                    )
+                )
+                if outcome.allowed:
+                    results[tu.id] = await self._exec_one(tu)
+                else:
+                    # reason 已由审查者写好（含"拒绝理由"或"审查未跑起来"的可区分文案）
+                    results[tu.id] = (False, outcome.reason, 0, {})
             elif decision.effect == "ask":
                 # 顺序要紧：**先 clear 再 yield**。
                 # yield 把控制权交给调用方，而调用方可能在同一轮事件循环里立刻
@@ -1364,6 +1403,43 @@ class Agent:
         except Exception:
             return False, "command"
 
+    def _should_review_approval(self) -> bool:
+        """是否把这次 `ask` 交给自动审查者。
+
+        两个条件缺一不可：挂了审查者 **且** 当前是 `REVIEW` 档。
+        其余档位（含有人值守的 `None`）一律不走这条路 → 零回归。
+        """
+        return (
+            self._approval_reviewer is not None
+            and self._unattended_policy is UnattendedPolicy.REVIEW
+        )
+
+    def _recent_user_messages(self, limit: int = 3) -> list[str]:
+        """取会话里最近的用户消息 —— 审查者判断"授权范围"的依据。
+
+        只取 user 角色：工具结果、assistant 自述都**不能**当作授权来源
+        （否则 agent 可以自己给自己写授权）。
+        """
+        msgs = getattr(self._conversation, "messages", None) or []
+        out: list[str] = []
+        for m in reversed(msgs):
+            role = getattr(m.role, "value", getattr(m, "role", ""))
+            if role != "user":
+                continue
+            content = getattr(m, "content", "")
+            if isinstance(content, list):
+                # 内部消息的 content 可能是 Anthropic 块数组（见 llm/adapters）
+                content = " ".join(
+                    str(b.get("text", ""))
+                    for b in content
+                    if isinstance(b, dict) and b.get("text")
+                )
+            if isinstance(content, str) and content.strip():
+                out.append(content)
+                if len(out) >= limit:
+                    break
+        return list(reversed(out))
+
     def _check_tool_permission(self, tu: ToolUse) -> Decision:
         """检查单个工具调用的权限。"""
         # 强制拒绝集：命中即 deny（试验/评测注入）
@@ -1380,6 +1456,11 @@ class Agent:
                         effect="deny",
                         reason=f"unattended:{policy.value} 拒绝交互式工具 {tu.name}",
                     )
+                if policy is UnattendedPolicy.REVIEW:
+                    # `REVIEW` 档**刻意不在这里代答**：审查要调模型（异步）且需要
+                    # 完整上下文，而本方法是同步的。保持 `ask` 原样返回，交给
+                    # `_execute_tools` 的 ask 分支处理（见 spec_approval_review）。
+                    return decision
                 effect = unattended_decide(policy, tc)
                 return Decision(
                     effect=effect,

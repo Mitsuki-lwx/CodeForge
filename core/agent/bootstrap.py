@@ -39,6 +39,8 @@ from core.instructions import load_instructions
 from core.mcp import ConnectionPool, MCPToolAdapter, load_mcp_config
 from core.notes import NoteStore, build_memory_index_text
 from core.notes.state import SessionStateStore
+from core.permissions.modes import UnattendedPolicy
+from core.permissions.reviewer import ApprovalReviewer
 from core.permissions.upgrade import ApprovalUpgrader
 from core.skills import SkillExecutor, SkillLoader
 from core.task.manager import BackgroundTaskManager
@@ -143,6 +145,30 @@ def _resolve_session_context(
     return SessionContext(
         session_id=d.name, session_dir=str(d), spill_dir=str(spill)
     )
+
+
+def _build_approval_reviewer(client: object, notices: list[str]) -> ApprovalReviewer | None:
+    """构造审批审查者：优先用 provider 配的 `model_aliases.haiku` 便宜档。
+
+    取不到该别名映射**不算错**（功能仍可用）—— 只是会走主模型，每个 `ask`
+    多一次与主模型同价位的调用。**要明确告诉用户**，否则成本会悄悄上去。
+
+    返回 `None` 表示构造失败，由调用方负责降级（见 `build_session` 里的注释：
+    没审查者的 `REVIEW` 档会落到无人应答的人工 HITL 上挂死）。
+    """
+    try:
+        config = getattr(client, "config", None)
+        aliases = getattr(config, "model_aliases", None) or {}
+        if "haiku" not in aliases:
+            notices.append(
+                "审批审查走主模型（provider 未配 model_aliases.haiku）——"
+                "每个 ask 会多一次与主模型同价位的调用，配 haiku 映射可显著降本"
+            )
+        # `create_with_model` 内部已做别名解析：没有映射时退回主模型。
+        return ApprovalReviewer(LLMClient.create_with_model(config, "haiku"))
+    except Exception as e:  # noqa: BLE001 —— 构造失败由调用方降级，不让它冒泡
+        logger.warning("审批审查者构造失败：%s: %s", type(e).__name__, e)
+        return None
 
 
 def _load_team_features(config_path: str, notices: list[str]) -> object | None:
@@ -355,6 +381,21 @@ async def build_session(
         agent.set_unattended_policy(unattended_policy)
     elif headless:
         agent._dont_ask = True
+
+    # ── `REVIEW` 档：挂上独立的审批审查者（spec_approval_review）──
+    #
+    # ⚠️ 装配失败必须**降级**：`REVIEW` 档没有审查者时，`ask` 会一路落到人工
+    # HITL —— 而无人值守下没人按键，那就是**挂死**。宁可退成一律拒绝。
+    if agent.unattended_policy is UnattendedPolicy.REVIEW:
+        reviewer = _build_approval_reviewer(client, notices)
+        if reviewer is not None:
+            agent.set_approval_reviewer(reviewer)
+        else:
+            agent.set_unattended_policy(UnattendedPolicy.DENY_ALL)
+            notices.append(
+                "审批审查者构造失败 → 无人值守档位已降级为 deny_all"
+                "（宁可全拒，也不能挂在无人应答的审批上）"
+            )
 
     # ── ExitPlanMode 回调注入 ──
     try:
