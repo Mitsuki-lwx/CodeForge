@@ -54,6 +54,7 @@ from core.context_compression.token import estimate_tokens, usage_anchor
 from core.hooks.events import HookContext
 from core.host.journal import SIDE_EFFECT_CATEGORIES, SideEffectJournal
 from core.permissions.checker import Decision, PermissionChecker
+from core.permissions.confidence_gate import gate_on_confidence
 from core.permissions.dangerous import DangerousCommandDetector
 from core.permissions.hitl import HITLRequest
 from core.permissions.modes import (
@@ -1240,11 +1241,15 @@ class Agent:
                         user_intent=self._recent_user_messages(),
                     )
                 )
-                if outcome.allowed:
+                # 置信度闸门（spec_confidence_gate）：审查说"放行"时，再看把握够不够。
+                # 不提供置信度的后端（现有 LLM 后端）→ 原样放行，行为逐字不变。
+                allow, gate_reason = gate_on_confidence(outcome)
+                if allow:
                     results[tu.id] = await self._exec_one(tu)
                 else:
-                    # reason 已由审查者写好（含"拒绝理由"或"审查未跑起来"的可区分文案）
-                    results[tu.id] = (False, outcome.reason, 0, {})
+                    # 闸门的原因更具体（含实际置信度与所用阈值），优先用它；
+                    # 没有闸门原因时回落到审查者的（含"拒绝理由"与"没跑起来"的可区分文案）。
+                    results[tu.id] = (False, gate_reason or outcome.reason, 0, {})
             elif decision.effect == "ask":
                 # 顺序要紧：**先 clear 再 yield**。
                 # yield 把控制权交给调用方，而调用方可能在同一轮事件循环里立刻
