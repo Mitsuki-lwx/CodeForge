@@ -148,28 +148,33 @@ def _resolve_session_context(
 
 
 def _resolve_review_backend(config_path: str | None) -> tuple[str, object | None]:
-    """读 `features.approval_review`，**永不抛**；读不到 → `("llm", None)`。
+    """读 `features.approval_review`，**永不抛**；读不到 → 默认后端 + 无配置。
+
+    默认后端是 **`jev`**（见 `docs/spec_jev_default.md`）：
+
+    - `config_path` 为空（调用方没给配置来源）→ `("jev", None)`
+      ⇒ 拿不到 Jev 的 key ⇒ 装配层判定"没有审查者"，调用方把 `REVIEW` 档降级为
+      `deny_all`（变严，安全）。**刻意不留 LLM 后门** —— 要求就是"用 Jev 的地方
+      就用 Jev，不用 llm"。
+    - 配置里没有 `approval_review` 段 → 同上（用默认，即 jev）。
+    - 读配置抛异常 → 同上，仍然不留后门。
 
     刻意与 `_load_team_features` 分开：那个函数会往 notices 里写"features 解析
-    失败"，这里再写一遍就是重复告警。非法取值本身由 loader 负责告警（它会退回
-    `llm`），这里只做静默读取。
-
-    `config_path` 为 `None` / 空时**不读配置**，直接按默认后端（llm）处理 ——
-    这样"没给配置来源"与引入本功能之前的行为**逐字一致**，既有调用点与测试
-    不受影响（`build_session` 会显式传入路径）。
+    失败"，这里再写一遍就是重复告警。非法取值本身由 loader 负责告警（它退回
+    默认 `jev`），这里只做静默读取 —— 但"没有审查者"这件事由装配层大声说出。
     """
     if not config_path:
-        return "llm", None
+        return "jev", None
     try:
         from config.loader import load_config_full
 
         _, features = load_config_full(config_path)
         cfg = getattr(features, "approval_review", None)
         if cfg is None:
-            return "llm", None
-        return str(getattr(cfg, "backend", "llm") or "llm"), getattr(cfg, "jev", None)
-    except Exception:  # noqa: BLE001 —— 读配置失败不该让审查者消失
-        return "llm", None
+            return "jev", None
+        return str(getattr(cfg, "backend", "jev") or "jev"), getattr(cfg, "jev", None)
+    except Exception:  # noqa: BLE001 —— 读配置失败也要有确定结果
+        return "jev", None
 
 
 def _build_approval_reviewer(
@@ -177,44 +182,54 @@ def _build_approval_reviewer(
 ) -> object | None:
     """构造审批审查者。后端由 `features.approval_review.backend` 决定。
 
-    - `llm`（默认）：优先用 provider 配的 `model_aliases.haiku` 便宜档。
+    - `jev`（**默认**）：走 Jev 决策模型（见 `docs/spec_jev_reviewer.md`）。
+      key 缺失或构造失败 → **`return None`，不回落 llm** —— 见
+      `docs/spec_jev_default.md`：宁可没有审查者（`REVIEW` 档会安全降级为
+      `deny_all`，比"静默改用另一个后端"更可预测），也必须留下可读 notice。
+    - `llm`（**显式可选**）：优先用 provider 配的 `model_aliases.haiku` 便宜档。
       取不到该别名映射**不算错**（功能仍可用）—— 只是会走主模型，每个 `ask`
       多一次与主模型同价位的调用。**要明确告诉用户**，否则成本会悄悄上去。
-    - `jev`：走 Jev 决策模型（见 `docs/spec_jev_reviewer.md`）。key 缺失或
-      构造失败 → **回落 llm 并告警** —— 不能返回 None，那会让 `REVIEW` 档落到
-      无人应答的人工 HITL 上挂死。
 
-    返回 `None` 只在两个后端都构造不起来时发生，由调用方负责降级。
+    返回 `None` 表示"没有审查者"，由调用方负责降级
+    （`build_session` 会把 `REVIEW` 档降级为 `deny_all`）。
     """
     backend, jev_cfg = _resolve_review_backend(config_path)
-    if backend == "jev" and jev_cfg is not None:
-        api_key = getattr(jev_cfg, "api_key", "") or ""
-        if api_key:
-            try:
-                from core.permissions.jev_reviewer import JevReviewer
 
-                model = getattr(jev_cfg, "model", "") or "jev-latest"
-                reviewer = JevReviewer(
-                    api_key,
-                    base_url=getattr(jev_cfg, "url", "")
-                    or "https://api.typesafe.ai/v1/systemone",
-                    model=model,
-                    timeout=float(getattr(jev_cfg, "timeout_s", 15.0) or 15.0),
-                )
-                notices.append(
-                    f"审批审查后端：Jev（{model}，超时 {reviewer.timeout:.0f}s）"
-                )
-                return reviewer
-            except Exception as e:  # noqa: BLE001 —— 回落 llm，不让它冒泡
-                logger.warning("Jev 审查者构造失败：%s: %s", type(e).__name__, e)
-                notices.append(
-                    f"Jev 审查者构造失败（{type(e).__name__}: {e}），已回落到 LLM 后端"
-                )
-        # `api_key` 为空的情形**到不了这里** —— loader（`_parse_approval_review_config`）
-        # 已经把它回落成 `llm` 并写了一条 stderr 告警。此处不再重复告警，
-        # 直接落到下面的 LLM 分支。
+    if backend == "jev":
+        api_key = str(getattr(jev_cfg, "api_key", "") or "") if jev_cfg is not None else ""
+        if not api_key:
+            notices.append(
+                "审批审查后端为 Jev，但没有可用的 "
+                "features.approval_review.jev.api_key —— "
+                "**没有回落到 LLM**，本次不启用审批审查"
+                "（无人值守档位将降级为 deny_all）。"
+                "要启用：配 features.approval_review.jev.api_key，"
+                "或显式写 features.approval_review.backend: llm 用回 LLM 后端。"
+            )
+            return None
+        try:
+            from core.permissions.jev_reviewer import JevReviewer
 
-    # ── LLM 后端（默认路径 / jev 不可用时的回落）──
+            model = getattr(jev_cfg, "model", "") or "jev-latest"
+            reviewer = JevReviewer(
+                api_key,
+                base_url=getattr(jev_cfg, "url", "")
+                or "https://api.typesafe.ai/v1/systemone",
+                model=model,
+                timeout=float(getattr(jev_cfg, "timeout_s", 15.0) or 15.0),
+            )
+            notices.append(f"审批审查后端：Jev（{model}，超时 {reviewer.timeout:.0f}s）")
+            return reviewer
+        except Exception as e:  # noqa: BLE001 —— 不让它冒泡；由调用方降级
+            logger.warning("Jev 审查者构造失败：%s: %s", type(e).__name__, e)
+            notices.append(
+                f"Jev 审查者构造失败（{type(e).__name__}: {e}）—— "
+                "**没有回落到 LLM**，本次不启用审批审查"
+                "（无人值守档位将降级为 deny_all）"
+            )
+            return None
+
+    # ── LLM 后端（**仅当显式配 `backend: llm` 时才走这里**）──
     try:
         config = getattr(client, "config", None)
         aliases = getattr(config, "model_aliases", None) or {}
@@ -452,7 +467,7 @@ async def build_session(
         else:
             agent.set_unattended_policy(UnattendedPolicy.DENY_ALL)
             notices.append(
-                "审批审查者构造失败 → 无人值守档位已降级为 deny_all"
+                "没有可用的审批审查者 → 无人值守档位已降级为 deny_all"
                 "（宁可全拒，也不能挂在无人应答的审批上）"
             )
 

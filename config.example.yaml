@@ -84,21 +84,25 @@ features:
 
   # ── 审批审查后端 ──
   # 只在无人值守的 review 档下生效（上面的 unattended_policy: review）。
-  #   backend: llm（默认）= 调 chat 模型 + 解析 JSON 输出（core/permissions/reviewer.py）
-  #            jev        = 用 Jev（TypeSafe System One）决策模型
+  #   backend: jev（默认）= 用 Jev（TypeSafe System One）决策模型
   #                         （core/permissions/jev_reviewer.py）—— 它**不生成文本**，
   #                         直接返回带概率的结构化判定（Choice/Score/Noul），
   #                         reason 由代码按数值拼出，比自由文本更可复查。
+  #            llm        = 调 chat 模型 + 解析 JSON 输出
+  #                         （core/permissions/reviewer.py）—— 显式可选，不是默认。
+  #                         ⚠️ 它会跟主对话**抢同一个 provider 额度**（实测撞过 429）。
   # ⚠️ Jev 实测延迟 1.2–9.7s（偶发 >90s）—— 审查阻塞在工具执行路径上，所以超时
   #    默认 15s，超时一律按拒绝处理（fail-closed）。
-  # ⚠️ api_key 为空时自动回落到 llm 后端（不会变成"没有审查者"而挂死在人工审批上）。
+  # ⚠️ **Jev 不可用时不会回落到 llm**（api_key 缺失 / 构造失败）：本次不启用审批审查，
+  #    `REVIEW` 档会**降级为 deny_all**（变严，不会误放行），并在启动时明确告警。
+  #    要用 LLM 后端就**显式**写 backend: llm。
   # ⚠️ 真实 key 不要写进本文件（**本文件进版本控制**）—— 写 config.yaml，它已被
   #    .gitignore 忽略。key 从 console.typesafe.ai 获取。
   approval_review:
-    backend: "llm"
+    backend: "jev"
     jev:
       url: "https://api.typesafe.ai/v1/systemone"
-      api_key: ""            # 留空 = 不用 jev 后端
+      api_key: ""            # 留空 = 不启用审批审查（**不会**自动改用 llm）
       model: "jev-latest"
       timeout_s: 15
 

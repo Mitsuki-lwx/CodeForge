@@ -244,23 +244,25 @@ def _parse_host_config(raw: dict) -> object:
 def _parse_approval_review_config(raw: dict) -> object:
     """解析 `features.approval_review`（审批审查的后端选择）。
 
-    非法值一律**告警并退回 `llm`（现有行为）**，不阻断启动。注意退回的**不是"关掉
-    审查"** —— 没有审查者的 `REVIEW` 档会落到无人应答的人工 HITL 上挂死，
-    所以"配置写错"的安全落点永远是"用回原来那个后端"。
+    **默认后端是 `jev`**，且 **Jev 不可用时不会回落到 `llm`** —— 见
+    `docs/spec_jev_default.md`。要点：
 
-    `backend="jev"` 但缺 api_key 时同样回落 llm 并明确告警：用户以为在用 Jev，
-    实际在用 LLM —— 这种事必须说出来。
+    - 缺 api_key **不在这里回落**：配置照原样交给装配层，由它判定"没有审查者"
+      并留下一条明确告警。在这里悄悄改成 `llm` 才是真正要避免的事
+      （用户以为在用 Jev，其实在烧主模型的额度）。
+    - 非法 `backend` 取值 → 告警并退回**默认**（`jev`），不阻断启动。
+    - "没有审查者"是安全的：`REVIEW` 档会被降级为 `deny_all`（变严，不是变松）。
     """
     from config.model import ApprovalReviewConfig, JevConfig
 
-    backend = str(raw.get("backend", "") or "llm").strip().lower()
-    if backend not in ("llm", "jev"):
+    backend = str(raw.get("backend", "") or "jev").strip().lower()
+    if backend not in ("jev", "llm"):
         print(
             f"警告：features.approval_review.backend='{backend}' 不是有效取值"
-            "（可选 ['llm', 'jev']），已按 'llm' 处理。",
+            "（可选 ['jev', 'llm']），已按默认 'jev' 处理。",
             file=sys.stderr,
         )
-        backend = "llm"
+        backend = "jev"
 
     jev = None
     raw_jev = raw.get("jev", None)
@@ -291,15 +293,8 @@ def _parse_approval_review_config(raw: dict) -> object:
             timeout_s=timeout_s,
         )
 
-    if backend == "jev" and (jev is None or not jev.api_key):
-        print(
-            "警告：features.approval_review.backend='jev' 但未提供 "
-            "features.approval_review.jev.api_key，已回落到 'llm' 后端"
-            "（功能仍可用，但用的不是 Jev）。",
-            file=sys.stderr,
-        )
-        backend = "llm"
-
+    # 这里**刻意不判断 api_key 是否为空**：缺 key 时"没有审查者"由装配层决定，
+    # 不在这层把 backend 改成 llm（静默换后端正是本次要消除的行为）。
     return ApprovalReviewConfig(backend=backend, jev=jev)
 
 

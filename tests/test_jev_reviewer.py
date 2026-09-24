@@ -385,10 +385,39 @@ def _features(path: str):
     return load_config_full(path)[1].approval_review
 
 
-def test_config_absent_means_llm_backend(tmp_path):
-    """整段不配 = 现有行为（llm），不是报错。"""
-    cfg = _features(_write_cfg(tmp_path, ""))
-    assert cfg is None or cfg.backend == "llm"
+def test_config_absent_means_default_backend(tmp_path):
+    """整段不配 = 走**默认后端**（`jev`），不是报错、也不是 llm。
+
+    配置对象本身是 `None`（没有这一段），默认值由解析层给出 ——
+    所以这里同时钉住两件事。
+    """
+    path = _write_cfg(tmp_path, "")
+    cfg = _features(path)
+    assert cfg is None  # 没有这一段
+
+    from core.agent.bootstrap import _resolve_review_backend
+
+    backend, jev_cfg = _resolve_review_backend(path)
+    assert backend == "jev"
+    assert jev_cfg is None  # 没配 jev 子段 ⇒ 没有 key
+
+
+def test_dataclass_default_backend_is_jev():
+    """数据类默认值必须是 `jev` —— 文档写的默认值要真的是默认值。
+
+    没有这条时，"默认值是 jev" 只由 loader 里的字符串兜底保证，
+    数据类自身改回 llm 也测不出来。
+    """
+    from config.model import ApprovalReviewConfig
+
+    assert ApprovalReviewConfig().backend == "jev"
+
+
+def test_loader_empty_dict_defaults_to_jev():
+    """`approval_review` 是个空 dict 时 → 也是 `jev`（不是 llm）。"""
+    from config.loader import _parse_approval_review_config
+
+    assert _parse_approval_review_config({}).backend == "jev"
 
 
 def test_config_jev_with_key(tmp_path):
@@ -405,22 +434,29 @@ def test_config_jev_with_key(tmp_path):
     assert cfg.jev.model == "jev-latest"
 
 
-def test_config_jev_without_key_falls_back(tmp_path, capsys):
-    """backend=jev 但没 key → 回落 llm **并告警**。
-    绝不能变成"没有审查者" —— 那会让 REVIEW 档挂死在人工审批上。"""
+def test_config_jev_without_key_does_not_fall_back(tmp_path, capsys):
+    """backend=jev 但没 key → **不回落 llm**（loader 层不做任何替换）。
+
+    "没有审查者"由装配层决定并大声说出，不在这层偷偷换后端 ——
+    静默换后端正是本次要消除的行为（`docs/spec_jev_default.md`）。
+    """
     cfg = _features(
         _write_cfg(tmp_path, "features:\n  approval_review:\n    backend: jev\n")
     )
-    assert cfg.backend == "llm"
-    assert "api_key" in capsys.readouterr().err
+    assert cfg.backend == "jev"  # 保持原样，没有被改成 llm
+    err = capsys.readouterr().err
+    assert "回落" not in err  # loader 不再报"已回落"
 
 
-def test_config_invalid_backend_falls_back(tmp_path, capsys):
+def test_config_invalid_backend_falls_back_to_default(tmp_path, capsys):
+    """非法取值 → 告警 + 退回**默认（jev）**，不是 llm。"""
     cfg = _features(
         _write_cfg(tmp_path, "features:\n  approval_review:\n    backend: wat\n")
     )
-    assert cfg.backend == "llm"
-    assert "wat" in capsys.readouterr().err
+    assert cfg.backend == "jev"
+    err = capsys.readouterr().err
+    assert "wat" in err
+    assert "jev" in err  # 告警里要说清退回到哪里
 
 
 def test_config_invalid_timeout_falls_back(tmp_path, capsys):
@@ -463,26 +499,109 @@ def test_bootstrap_builds_jev_reviewer(tmp_path):
     assert any("Jev" in n for n in notices)
 
 
-def test_bootstrap_jev_without_key_never_builds_jev(tmp_path):
-    """key 为空 → **不会**造出 `JevReviewer`（loader 已把它回落成 llm）。"""
+def test_bootstrap_jev_without_key_never_falls_back_to_llm(tmp_path):
+    """key 为空 → **不启用审查**，且**明确说"没有回落到 LLM"**。
+
+    这是本次改动的核心：宁可没有审查者（`REVIEW` 档会降级成 `deny_all`，变严），
+    也不静默改用另一个后端。**给一个能用的 client 也一样** —— 不留后门。
+    """
+    from config.model import ProviderConfig
     from core.agent.bootstrap import _build_approval_reviewer
+    from llm.client import LLMClient
 
     path = _write_cfg(
         tmp_path,
         "features:\n  approval_review:\n    backend: jev\n    jev:\n      api_key: ''\n",
     )
+    client = LLMClient.create(
+        ProviderConfig(name="t", protocol="openai", model="m", api_key="sk-x")
+    )
     notices: list[str] = []
-    reviewer = _build_approval_reviewer(None, notices, path)
-    assert not isinstance(reviewer, JevReviewer)
-    assert reviewer is None  # client=None → LLM 分支也造不起来
+    reviewer = _build_approval_reviewer(client, notices, path)
+    assert reviewer is None
+    joined = " ".join(notices)
+    assert "没有回落到" in joined, notices
+    assert "api_key" in joined
 
 
-def test_bootstrap_default_backend_uses_llm_path(tmp_path):
-    """不配 → 走 LLM 分支（且**不该**出现 Jev 的 notice）。"""
+def test_bootstrap_broken_jev_config_never_falls_back_to_llm(tmp_path, monkeypatch):
+    """Jev 构造失败 → 同样**不回落** llm，返回 None + notice。
+
+    用 monkeypatch 让构造函数真的抛（`JevReviewer` 不校验 url，光配个假 url
+    不会失败 —— 这点也是实测出来的）。
+    """
+    import core.permissions.jev_reviewer as jev_mod
+    from config.model import ProviderConfig
     from core.agent.bootstrap import _build_approval_reviewer
+    from llm.client import LLMClient
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("构造故意失败")
+
+    monkeypatch.setattr(jev_mod, "JevReviewer", _boom)
+
+    path = _write_cfg(
+        tmp_path,
+        "features:\n  approval_review:\n    backend: jev\n    jev:\n"
+        "      api_key: fake\n",
+    )
+    client = LLMClient.create(
+        ProviderConfig(name="t", protocol="openai", model="m", api_key="sk-x")
+    )
+    notices: list[str] = []
+    reviewer = _build_approval_reviewer(client, notices, path)
+    assert reviewer is None
+    assert any("没有回落到" in n for n in notices), notices
+
+
+def test_bootstrap_default_backend_is_jev_not_llm(tmp_path):
+    """不配 `approval_review` 段 → 默认走 **jev**；没有 key 就没有审查者。
+
+    关键断言：**即使给了一个完好的 LLM client，也不会造出 LLM 审查者**。
+    """
+    from config.model import ProviderConfig
+    from core.agent.bootstrap import _build_approval_reviewer
+    from llm.client import LLMClient
 
     path = _write_cfg(tmp_path, "")
+    client = LLMClient.create(
+        ProviderConfig(name="t", protocol="openai", model="m", api_key="sk-x")
+    )
     notices: list[str] = []
-    reviewer = _build_approval_reviewer(None, notices, path)
-    assert reviewer is None
-    assert not any("Jev" in n for n in notices)
+    reviewer = _build_approval_reviewer(client, notices, path)
+    assert reviewer is None, "默认是 jev，没有 key 就不该造出 LLM 审查者"
+    assert any("Jev" in n for n in notices)
+
+
+def test_bootstrap_no_config_path_resolves_to_jev():
+    """没给配置来源 → 也按默认（jev）解析，**不回到 llm**。"""
+    from core.agent.bootstrap import _resolve_review_backend
+
+    assert _resolve_review_backend(None) == ("jev", None)
+    assert _resolve_review_backend("") == ("jev", None)
+
+
+def test_bootstrap_explicit_llm_backend_still_works(tmp_path):
+    """显式 `backend: llm` 仍能造出 `ApprovalReviewer`（零回归）。
+
+    LLM 后端是**显式可选项**，不是默认、也不是回落 —— 这条路必须留着。
+    """
+    from config.model import ProviderConfig
+    from core.agent.bootstrap import _build_approval_reviewer
+    from llm.client import LLMClient
+
+    path = _write_cfg(tmp_path, "features:\n  approval_review:\n    backend: llm\n")
+    client = LLMClient.create(
+        ProviderConfig(
+            name="t",
+            protocol="openai",
+            model="main-model",
+            api_key="sk-x",
+            model_aliases={"haiku": "cheap-model"},
+        )
+    )
+    notices: list[str] = []
+    reviewer = _build_approval_reviewer(client, notices, path)
+    assert reviewer is not None
+    assert not isinstance(reviewer, JevReviewer)
+    assert reviewer._client.config.model == "cheap-model"  # 仍走 haiku 便宜档

@@ -53,7 +53,7 @@ class JevConfig:
     """
 
     url: str = "https://api.typesafe.ai/v1/systemone"
-    api_key: str = ""  # 空 = jev 后端不可用（装配时告警并回落 llm）
+    api_key: str = ""  # 空 = jev 后端不可用（装配时不启用审查，**不回落 llm**）
     model: str = "jev-latest"
     timeout_s: float = 15.0  # 实测延迟 1.2–9.7s（偶发 >90s）→ 15s 覆盖实测最慢
 
@@ -62,13 +62,15 @@ class JevConfig:
 class ApprovalReviewConfig:
     """审批审查的后端选择（`features.approval_review`）。
 
-    - `backend="llm"`（默认）：现有行为 —— 调 chat 模型 + 解析 JSON 输出
-    - `backend="jev"`：改用 Jev 决策模型（见 `docs/spec_jev_reviewer.md`）
+    - `backend="jev"`（**默认**）：Jev 决策模型（见 `docs/spec_jev_reviewer.md`）
+    - `backend="llm"`：调 chat 模型 + 解析 JSON 输出（显式可选；**不再作为默认或回落**）
 
-    整段不配与 `backend="llm"` 等价 → **不配就没有任何行为变化**。
+    整段不配 = 走默认（`jev`）。**Jev 不可用时不回落到 llm** —— 见
+    `docs/spec_jev_default.md`：宁可没有审查者（`REVIEW` 档会安全降级为
+    `deny_all`），也不静默改用另一个后端。
     """
 
-    backend: str = "llm"
+    backend: str = "jev"
     jev: JevConfig | None = None
 
 

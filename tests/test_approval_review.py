@@ -351,9 +351,34 @@ def test_recent_user_messages_respects_limit():
 
 
 # ── 5. 装配 ─────────────────────────────────────────────────────────
+#
+# ⚠️ `features.approval_review.backend` 的**默认值已改成 `jev`**，且
+# Jev 不可用时**不再回落到 llm**（见 `docs/spec_jev_default.md`）。
+# 下面这几个用例测的是 **LLM 后端自己**的行为，所以必须**显式声明
+# `backend: llm`** —— 否则测到的就不再是它们想测的东西。
 
 
-def test_build_reviewer_uses_haiku_alias_when_present():
+def _llm_backend_cfg(tmp_path) -> str:
+    """写一份"显式选择 LLM 后端"的配置（装配用例用）。
+
+    刻意把 providers 也写全：loader 在没有任何 provider 时会直接退出。
+    """
+    path = Path(tmp_path) / "llm_backend.yaml"
+    path.write_text(
+        "providers:\n"
+        "  - name: t\n"
+        "    protocol: openai\n"
+        "    model: m\n"
+        "    api_key: k\n"
+        "features:\n"
+        "  approval_review:\n"
+        "    backend: llm\n",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_build_reviewer_uses_haiku_alias_when_present(tmp_path):
     from config.model import ProviderConfig
     from core.agent.bootstrap import _build_approval_reviewer
     from llm.client import LLMClient
@@ -366,13 +391,15 @@ def test_build_reviewer_uses_haiku_alias_when_present():
         model_aliases={"haiku": "cheap-model"},
     )
     notices: list[str] = []
-    reviewer = _build_approval_reviewer(LLMClient.create(cfg), notices)
+    reviewer = _build_approval_reviewer(
+        LLMClient.create(cfg), notices, _llm_backend_cfg(tmp_path)
+    )
     assert reviewer is not None
     assert reviewer._client.config.model == "cheap-model"
     assert notices == []
 
 
-def test_build_reviewer_warns_when_no_alias_configured():
+def test_build_reviewer_warns_when_no_alias_configured(tmp_path):
     """没配别名不算错（仍可用），但**必须告知成本上升**，否则钱会悄悄花掉。"""
     from config.model import ProviderConfig
     from core.agent.bootstrap import _build_approval_reviewer
@@ -380,20 +407,22 @@ def test_build_reviewer_warns_when_no_alias_configured():
 
     cfg = ProviderConfig(name="t", protocol="openai", model="main-model", api_key="sk-x")
     notices: list[str] = []
-    reviewer = _build_approval_reviewer(LLMClient.create(cfg), notices)
+    reviewer = _build_approval_reviewer(
+        LLMClient.create(cfg), notices, _llm_backend_cfg(tmp_path)
+    )
     assert reviewer is not None
     assert reviewer._client.config.model == "main-model"
     assert any("主模型" in n for n in notices)
 
 
-def test_build_reviewer_returns_none_on_broken_config():
+def test_build_reviewer_returns_none_on_broken_config(tmp_path):
     """构造失败要返回 None（由调用方降级），不能抛出来打断启动。"""
     from core.agent.bootstrap import _build_approval_reviewer
 
     class _Broken:
         config = None
 
-    assert _build_approval_reviewer(_Broken(), []) is None
+    assert _build_approval_reviewer(_Broken(), [], _llm_backend_cfg(tmp_path)) is None
 
 
 # ── 6. 决策链顺序（回归锁）──────────────────────────────────────────
