@@ -93,3 +93,41 @@ def test_existing_flags_still_parse(tmp_path) -> None:
     assert args.agent_type == "coder"
     assert args.plan_mode is True
     assert args.loop == "react"
+
+
+# ── 无人值守档位：CLI 白名单必须与枚举同步 ──
+#
+# 踩过的坑：`review` 档加进 `UnattendedPolicy` 后，`--unattended-policy` 的
+# `choices` 还是手抄的三项 —— argparse 直接把 `--unattended-policy review` 拒掉，
+# 新档位在命令行上**等于不存在**（跑 `codeforge host --unattended-policy review`
+# 会得到 "invalid choice"）。所以这里断言"枚举里的每一项都能从 CLI 传进来"，
+# 而不是只测当下这几个值。
+
+
+def test_every_enum_policy_is_accepted_by_cli() -> None:
+    """枚举里能列出的档位，CLI 都必须收 —— 这是"新增档位忘改白名单"的护栏。"""
+    from core.permissions.modes import UnattendedPolicy
+
+    for policy in UnattendedPolicy:
+        args = _parse_args(["host", "--unattended-policy", policy.value])
+        assert args.unattended_policy == policy.value
+
+
+def test_review_policy_is_accepted() -> None:
+    """`review` 档曾经传不进来（手抄白名单漏了它）—— 单独钉一条，失败信息更直白。"""
+    args = _parse_args(["host", "--unattended-policy", "review"])
+    assert args.unattended_policy == "review"
+
+
+def test_unknown_policy_is_rejected() -> None:
+    """乱写的档位要被 argparse 拒掉（不能静默接受）。"""
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit):
+        _parse_args(["host", "--unattended-policy", "wat"])
+
+
+def test_unattended_policy_omitted_stays_none() -> None:
+    """省略时必须是 `None`（= 交给 config 决定），不能被 argparse 填上默认值。"""
+    assert _parse_args(["host"]).unattended_policy is None
+

@@ -18,6 +18,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     所以 `--member host` 不会把 `host` 误当子命令。
     """
     p = argparse.ArgumentParser(prog="codeforge", description="终端 AI 编程助手")
+
+    # 合法档位取自 `UnattendedPolicy`（**单一事实来源**），不在这里手抄一份字符串
+    # 列表 —— 手抄的后果是"新增了档位但 CLI 选不了"：`review` 加进枚举后，
+    # 这里的硬编码列表没跟着更新，`--unattended-policy review` 被 argparse 直接
+    # 拒掉，新档位在命令行上等于不存在。同类问题在配置解析里已经踩过一次。
+    from core.permissions.modes import UnattendedPolicy
+
     p.add_argument(
         "command",
         nargs="?",
@@ -59,13 +66,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--unattended-policy",
         dest="unattended_policy",
         default=None,  # None = 未指定；交给 config 的 features.host.unattended_policy
-        choices=["allow_all", "allow_write", "deny_all"],
+        choices=[pol.value for pol in UnattendedPolicy],
         help=(
             "host 子命令：无人值守下如何代答 ask 级工具决策。"
             "省略时取 config 的 features.host.unattended_policy（默认 deny_all）。"
-            "deny_all 一律拒绝；allow_write 另放行写文件（需要 agent 改代码时用）；"
-            "allow_all 全放。只读工具本就不询问、不受本策略影响；"
+            "deny_all 一律拒绝（最保守）；allow_write 另放行写文件（需要 agent 改代码时用）；"
+            "allow_all 全放；review 由独立审查者逐个判断（见 spec_approval_review）。"
+            "只读工具本就不询问、不受本策略影响；"
             "交互式工具（计划确认等）任何档位都拒。"
+            "⚠️ review 档需要配好审批审查后端（features.approval_review），"
+            "拿不到审查者时会**降级为 deny_all**。"
         ),
     )
     p.add_argument(
