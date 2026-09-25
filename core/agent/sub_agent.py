@@ -86,24 +86,67 @@ def _serving_upgrader(agent: Any) -> Any:
 
 
 def _has_ask_responder(agent: Any) -> bool:
-    """该 Agent **当前已生效**的 `ask` 应答者（通道 / 策略 / dont_ask 任一）。"""
-    return (
-        getattr(agent, "_approval_upgrader", None) is not None
-        or getattr(agent, "unattended_policy", None) is not None
-        or bool(getattr(agent, "_dont_ask", False))
-    )
+    """该 Agent **当前已生效、且自足**的 `ask` 应答者。
+
+    ⚠️ 「有策略」**不等于**「有人应答」：`review` 档**不自足** —— 它要靠挂着一个
+    审查者（`_approval_reviewer`）才有意义。裸的 `review`（有档位、没审查者）会让
+    `ask` 一路落到人工 HITL，无人值守下就是**无限期挂死**。
+    所以这里对 `review` 额外要求审查者在位。
+
+    这条判定是**防御性**的：将来若又出现新的"需要配套机制才自足"的档位，
+    也会在这里被挡住，而不是靠每个入口自己记得。
+    """
+    if getattr(agent, "_approval_upgrader", None) is not None:
+        return True
+    if bool(getattr(agent, "_dont_ask", False)):
+        return True
+    policy = getattr(agent, "unattended_policy", None)
+    if policy is None:
+        return False
+    from core.permissions.modes import UnattendedPolicy
+
+    if policy is UnattendedPolicy.REVIEW:
+        # `review` 必须同时有审查者才算应答者 —— 少了它就是挂死。
+        return getattr(agent, "_approval_reviewer", None) is not None
+    return True
+
+
+def _shared_reviewer(parent: Any) -> Any:
+    """父在 `review` 档且挂着审查者时，把**父的审查者**借给子 Agent。
+
+    为什么共享是安全的：审查者是**每次调用无状态**的
+    （`review(ctx) -> ReviewOutcome`，不持有会话、不累积状态），
+    父子共用同一个实例不会互相污染。
+
+    为什么要共享：`review` 档不自足，而子 Agent 拿不到审查者时只有两条路 ——
+    挂死（裸 review）或退回最保守档（能力残废）。共享既保住语义
+    （父用 Jev 审、子也用 Jev 审）又不降能力。
+    """
+    from core.permissions.modes import UnattendedPolicy
+
+    if getattr(parent, "unattended_policy", None) is not UnattendedPolicy.REVIEW:
+        return None
+    return getattr(parent, "_approval_reviewer", None)
 
 
 def _fallback_policy(parent: Any) -> Any:
-    """兜底策略：按父的授权范围推导；拿不到父就取最保守档。"""
+    """兜底策略：按父的授权范围推导；拿不到父就取最保守档。
+
+    ⚠️ **绝不返回 `review`**：它是唯一不自足的档位（要靠审查者）。
+    这个函数的职责是"给一个装上去就能用的策略"，而裸 `review` 装上去会挂死。
+    想保留 `review` 语义请走 `_shared_reviewer`（借审查者）。
+    """
     from core.permissions.modes import UnattendedPolicy, resolve_child_policy
 
     if parent is None:
         return UnattendedPolicy.DENY_ALL
     try:
-        return resolve_child_policy(parent)
+        policy = resolve_child_policy(parent)
     except Exception:  # noqa: BLE001 —— 推导失败也必须给出一个应答者
         return UnattendedPolicy.DENY_ALL
+    if policy is UnattendedPolicy.REVIEW:
+        return UnattendedPolicy.DENY_ALL
+    return policy
 
 
 @contextmanager
@@ -117,13 +160,19 @@ def arming_approval(agent: Any, parent: Any = None):
     1. **有通道，且角色未显式声明 `dontask`** → 挂通道，并摘掉
        `unattended_policy`。策略若残留，`ask` 会在**权限层**就被代答，
        请求根本到不了通道——整个功能会是死的（附录 A 实测踩过）。
-    2. **三种应答机制全无** → 按 `parent` 的授权范围兜底，并记 warning。
-       绝不静默挂死。
+    2. **没有任何自足的应答者** → 先试着**借父的审查者**（父在 `review` 档时）；
+       借不到再按 `parent` 的授权范围兜底。两种情况都记日志，绝不静默挂死。
     3. **已有应答者** → 什么都不做（既有入口零改动）。
 
     角色**显式** `dontask` 时不抢：能力清单第 9 条的层次是
     『父已批准账本 → 角色 `permission_mode` 兜底（含 `dontAsk`）→ 升级到主 TUI』，
     `dontAsk` 是中间层、先于升级，抢它会破坏角色契约。
+
+    ⚠️ **第 2 条为什么先试"借审查者"**：`review` 档**不自足** —— 它要靠挂着
+    审查者才有意义。旧实现在第 2 条直接按父的档位推导，于是父是 `review` 时
+    子也拿到 `review`，但子**没有审查者** → `ask` 落到人工 HITL →
+    **无人值守下无限期挂死**（实测复现见
+    `.workbuddy-ai/verify_review_child_hang.py`）。
     """
     # 非真 Agent（单测里常见 `object()` 桩）没有可接入的机制 —— 原样透传，
     # 不写任何属性（否则直接 AttributeError）。
@@ -131,9 +180,12 @@ def arming_approval(agent: Any, parent: Any = None):
         yield
         return
 
+    from core.permissions.modes import UnattendedPolicy
+
     upgrader = _serving_upgrader(agent)
     prev_policy = getattr(agent, "unattended_policy", None)
     prev_upgrader = getattr(agent, "_approval_upgrader", None)
+    prev_reviewer = getattr(agent, "_approval_reviewer", None)
     prev_dont_ask = bool(getattr(agent, "_dont_ask", False))
     changed = False
     try:
@@ -144,21 +196,38 @@ def arming_approval(agent: Any, parent: Any = None):
             agent.set_unattended_policy(None)
             changed = True
         elif not _has_ask_responder(agent):
-            policy = _fallback_policy(parent)
-            agent.set_unattended_policy(policy)
-            changed = True
-            logger.warning(
-                "子 Agent（%s）的 ask 级决策无人应答 → 已按 %s 兜底（%s），"
-                "避免无限期挂死。",
-                getattr(agent, "_agent_name", None) or "<unnamed>",
-                getattr(policy, "value", policy),
-                "按父的授权范围推导" if parent is not None else "拿不到父，取最保守档",
-            )
+            name = getattr(agent, "_agent_name", None) or "<unnamed>"
+            shared = _shared_reviewer(parent)
+            if shared is not None:
+                # 借父的审查者，保住 `review` 语义（父用 Jev 审，子也用 Jev 审）。
+                agent._approval_reviewer = shared
+                agent.set_unattended_policy(UnattendedPolicy.REVIEW)
+                changed = True
+                logger.info(
+                    "子 Agent（%s）借用父的审批审查者（%s），沿用 review 档 —— "
+                    "review 不自足，不借就会挂在无人应答的审批上。",
+                    name,
+                    type(shared).__name__,
+                )
+            else:
+                policy = _fallback_policy(parent)
+                agent.set_unattended_policy(policy)
+                changed = True
+                logger.warning(
+                    "子 Agent（%s）的 ask 级决策无人应答 → 已按 %s 兜底（%s），"
+                    "避免无限期挂死。",
+                    name,
+                    getattr(policy, "value", policy),
+                    "按父的授权范围推导"
+                    if parent is not None
+                    else "拿不到父，取最保守档",
+                )
         yield
     finally:
         # 只有**改过**才还原：没改过就一个属性都不碰，保住"零改动"这条语义。
         if changed:
             agent._approval_upgrader = prev_upgrader
+            agent._approval_reviewer = prev_reviewer
             agent.set_unattended_policy(prev_policy)
             agent._dont_ask = prev_dont_ask
 

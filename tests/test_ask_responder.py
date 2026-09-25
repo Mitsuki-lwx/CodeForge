@@ -297,3 +297,150 @@ async def test_armed_agent_escalates_to_channel(tmp_path):
     assert len(seen) == 1, "请求必须冒泡到通道（否则就是又绕回了策略代答）"
     assert seen[0].origin == "forkx", "冒泡的请求要带来源身份"
     assert (tmp_path / "x.txt").exists(), "界面允许后工具应执行"
+
+
+# ── 4. `review` 档的**自足性**（子 Agent 挂死修复）────────────────────
+#
+# 背景（`docs/spec_review_rollout_gaps.md` §2）：
+# `review` 是唯一**不自足**的档位 —— 它要靠挂着审查者（`_approval_reviewer`）
+# 才有意义。旧实现让子 Agent 原样继承 `review` 档却不给它审查者，而
+# `_has_ask_responder` 把"有策略"就算作"有应答者"，于是兜底不触发
+# → `ask` 落到人工 HITL → **无人值守下无限期挂死**。
+# 实测复现：`.workbuddy-ai/verify_review_child_hang.py`。
+
+
+class _StubReviewer:
+    """审查者替身：记录被调用过的上下文。"""
+
+    def __init__(self, allowed: bool = True) -> None:
+        self.allowed = allowed
+        self.seen: list = []
+
+    async def review(self, ctx):
+        from core.permissions.reviewer import ReviewOutcome
+
+        self.seen.append(ctx)
+        return ReviewOutcome(allowed=self.allowed, reason="stub 审查结论")
+
+
+class _ReviewParent:
+    """父替身：处于 `review` 档，审查者可选（`None` 模拟未建起来的降级态）。"""
+
+    def __init__(self, reviewer=None) -> None:
+        self.permission_mode = PermissionMode.DEFAULT
+        self.unattended_policy = UnattendedPolicy.REVIEW
+        self._approval_reviewer = reviewer
+
+
+def test_has_ask_responder_rejects_bare_review(tmp_path):
+    """有 `review` 档但**没审查者** → 不算有应答者。
+
+    这条是整个修复的核心判定：把"有策略"这种**表面状态**纠正成"策略**自足**"。
+    少了它，任何裸 `review` 都会被误判成"有人管"，兜底永远不触发。
+    """
+    from core.agent.sub_agent import _has_ask_responder
+
+    agent = _mk_agent(tmp_path)
+    agent.set_unattended_policy(UnattendedPolicy.REVIEW)
+    assert _has_ask_responder(agent) is False, "裸 review 不能算有应答者"
+
+    agent.set_approval_reviewer(_StubReviewer())
+    assert _has_ask_responder(agent) is True, "review + 审查者才算自足"
+
+
+def test_fallback_policy_never_returns_review(tmp_path):
+    """兜底策略**绝不返回 `review`** —— 把裸 review 装上去就是挂死。"""
+    from core.agent.sub_agent import _fallback_policy
+
+    assert _fallback_policy(_ReviewParent()) is UnattendedPolicy.DENY_ALL
+    # 对照组：其它档位照常按父的授权范围继承
+    assert (
+        _fallback_policy(_Parent(PermissionMode.DEFAULT))
+        is UnattendedPolicy.ALLOW_WRITE
+    )
+
+
+@pytest.mark.asyncio
+async def test_arming_shares_parent_reviewer(tmp_path):
+    """父在 `review` 档 → 子**借到父的同一个审查者**并沿用 review 档；退出后还原。"""
+    stub = _StubReviewer()
+    agent = _mk_agent(tmp_path)
+
+    with arming_approval(agent, parent=_ReviewParent(stub)):
+        assert agent._approval_reviewer is stub
+        assert agent.unattended_policy is UnattendedPolicy.REVIEW
+
+    assert agent._approval_reviewer is None, "退出必须还原（否则污染后续会话）"
+    assert agent.unattended_policy is None
+
+
+@pytest.mark.asyncio
+async def test_arming_fixes_child_holding_bare_review(tmp_path):
+    """子 Agent **已经持有裸 `review`**（继承来的）时，装机制必须纠正它。
+
+    这是那条防御判定真正起作用的地方：若 `_has_ask_responder` 只看"有没有策略"，
+    裸 `review` 会被误判成"有人管" → 兜底分支不触发 → 子仍挂着裸 review
+    → `ask` 落到人工 HITL → **挂死**（这正是线上那条路径）。
+    """
+    stub = _StubReviewer()
+    agent = _mk_agent(tmp_path)
+    agent.set_unattended_policy(UnattendedPolicy.REVIEW)  # 裸 review，没审查者
+
+    with arming_approval(agent, parent=_ReviewParent(stub)):
+        assert agent._approval_reviewer is stub, "裸 review 必须被补上审查者"
+
+    assert agent.unattended_policy is UnattendedPolicy.REVIEW, "退出要还原成原来的档位"
+    assert agent._approval_reviewer is None
+
+
+@pytest.mark.asyncio
+async def test_armed_review_child_does_not_hang(tmp_path):
+    """端到端：父 review + 子无应答者 → `ask` 交给审查者，**不挂在人工审批上**。"""
+    stub = _StubReviewer()
+    agent = _mk_agent(tmp_path)
+
+    with arming_approval(agent, parent=_ReviewParent(stub)):
+        await asyncio.wait_for(
+            _drain(
+                agent,
+                [
+                    ToolUse(
+                        id="t1",
+                        name="write_file",
+                        input={"file_path": "x.txt", "content": "hi"},
+                    )
+                ],
+            ),
+            timeout=10,
+        )
+
+    assert len(stub.seen) == 1, "ask 必须交给审查者（否则就是挂在无人应答的 HITL 上）"
+    assert (tmp_path / "x.txt").exists(), "审查放行后工具应执行"
+
+
+@pytest.mark.asyncio
+async def test_arming_review_parent_without_reviewer_falls_back(tmp_path):
+    """父**仍是** review 但审查者缺失（降级态）→ 子拿 `deny_all`，依然不挂死。
+
+    这是补丁面之外的第二条路径：父自己没被降级，只是审查者没建起来。
+    """
+    agent = _mk_agent(tmp_path)
+
+    with arming_approval(agent, parent=_ReviewParent(None)):
+        assert agent._approval_reviewer is None
+        assert agent.unattended_policy is UnattendedPolicy.DENY_ALL
+        await asyncio.wait_for(
+            _drain(
+                agent,
+                [
+                    ToolUse(
+                        id="t1",
+                        name="write_file",
+                        input={"file_path": "x.txt", "content": "hi"},
+                    )
+                ],
+            ),
+            timeout=10,
+        )
+
+    assert not (tmp_path / "x.txt").exists(), "没审查者时应当保守拒绝"
