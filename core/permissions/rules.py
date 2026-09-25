@@ -144,13 +144,34 @@ def _is_safe_segment(seg: str) -> bool:
 
     # VCS 命令特殊处理
     if base_cmd == "git" and len(parts) >= 2:
-        subcmd = ' '.join(parts[1:3]) if len(parts) >= 3 else parts[1]
-        if subcmd in _SAFE_GIT_SUBCOMMANDS:
+        # 先试**两词**形式 —— 它存在的意义是区分「`stash list`（安全）」与
+        # 「`stash`（危险）」。两词不中再回退到**单词**子命令。
+        #
+        # ⚠️ 修的是一个 fail-open 漏洞：旧实现**只看两词**，
+        #    `git commit -m x` 取到的是 `'commit -m'` —— 两个集合都不匹配，
+        #    于是落到下面那条"未知子命令 = 安全"的分支。后果是
+        #    `git reset --hard` / `git clean -fdx` / `git push --force` /
+        #    `git checkout -- .` **全部被当成只读命令直接放行**，
+        #    连 `deny_all` 档都绕得过去（审批、审查者、置信度闸门全被跳过，
+        #    因为权限层在这里就说了 allow）。
+        #    注意 `commit` / `reset` / `push` 本来就在危险集合里 ——
+        #    集合没错，**取词取错了**。
+        two = " ".join(parts[1:3]) if len(parts) >= 3 else parts[1]
+        if two in _SAFE_GIT_SUBCOMMANDS:
             return True
-        if subcmd in _DESTRUCTIVE_GIT_SUBCOMMANDS:
+        if two in _DESTRUCTIVE_GIT_SUBCOMMANDS:
             return False
-        # 未知 git 子命令 → 按 git 本身判断
-        return True
+
+        sub = parts[1]
+        if sub in _SAFE_GIT_SUBCOMMANDS:
+            return True
+        if sub in _DESTRUCTIVE_GIT_SUBCOMMANDS:
+            return False
+
+        # 未知 git 子命令 → **fail-closed**（不再"按 git 本身判断 = 安全"）。
+        # 交给权限矩阵判，落到 `ask`。代价是 `git grep` 这类无害子命令也会问人 ——
+        # 这是刻意选的：**不确定就问，比不确定就放行安全**。
+        return False
 
     # 完整命令匹配（如 "python --version"）
     full_cmd = ' '.join(parts[:2]) if len(parts) >= 2 else parts[0]
