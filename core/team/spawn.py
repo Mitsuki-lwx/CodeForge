@@ -101,6 +101,7 @@ async def spawn_teammate(
         system_prompt_extra="",
     )
     sub_conv = _build_teammate_conv(
+        agent=sub_agent,
         prompt=prompt,
         subagent_type=subagent_type,
         team=team,
@@ -285,15 +286,21 @@ def _build_teammate_agent(
 
 
 def _build_teammate_conv(
+    agent: Any,
     prompt: str,
     subagent_type: str,
     team: Any,
     info: TeammateInfo,
 ) -> Any:
-    """构造队友 Conv：任务作为首条 user 消息 + 注入 `<team-context>` reminder。"""
-    from conversation.manager import ConversationManager
+    """装填队友的会话：任务作为首条 user 消息 + 注入 `<team-context>` reminder。
 
-    conv = ConversationManager()
+    ⚠️ 复用 **agent 自己的会话对象**（`agent._conversation`），**不另建** ——
+    `Agent._execute_tools` 把工具结果写进 `self._conversation`，而
+    `run_to_completion` 从传入的 conv 读写助手消息。另建一个会让消息分裂，
+    模型看不到任何工具输出 → 反复重发 → 跑满 `max_turns` → **产出空内容**。
+    根因见 `docs/spec_subagent_empty_output.md`。
+    """
+    conv = agent._conversation
     conv.add_user_message(prompt)
     conv.add_system_reminder(build_team_context_reminder(team, info))
     return conv

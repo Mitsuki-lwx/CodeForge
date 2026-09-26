@@ -318,8 +318,18 @@ class AgentTool(Tool):
             logger.exception("Failed to build sub-agent")
             return ToolResult(success=False, error=f"Failed to build sub-agent: {e}")
 
-        # ── 7. 构造子对话 ──
-        from conversation.manager import ConversationManager
+        # ── 7. 装填子对话 ──
+        #
+        # ⚠️ **必须复用子 Agent 自己的会话对象**（`sub_agent._conversation`），
+        # 不能在这里另建一个。原因：`Agent._execute_tools` 把**工具结果写进
+        # `self._conversation`**，而 `run_to_completion` 从传入的 conv 读写助手消息。
+        # 两个对象不同 → 消息被劈成两半（助手消息进 A、工具结果进 B）→
+        # 下一轮 `to_api_format()` 里没有工具结果 → 模型看不到任何工具输出 →
+        # 反复重发同一批调用 → 跑满 `max_turns` → **返回空字符串**。
+        #
+        # 这正是"Explore 子 Agent 完整回合产出空内容"的根因（三个入口都中招：
+        # Agent 工具 / pane 队友 / 后台任务）。见 `docs/spec_subagent_empty_output.md`。
+        sub_conv = sub_agent._conversation
 
         if is_fork:
             try:
@@ -328,15 +338,11 @@ class AgentTool(Tool):
                 parent_msgs = getattr(parent, "_conversation", None)
                 if parent_msgs is not None:
                     forked = build_forked_messages(parent_msgs.messages, args.prompt)
-                    sub_conv = ConversationManager()
                     sub_conv.replace_history(forked)
                 else:
-                    sub_conv = ConversationManager()
                     sub_conv.add_user_message(args.prompt)
             except Exception as e:  # noqa: BLE001 —— 消息克隆失败转错误结果
                 return ToolResult(success=False, error=f"Failed to fork messages: {e}")
-        else:
-            sub_conv = ConversationManager()
 
         # 记录 worktree session 到子 Agent（run_to_completion 结束 cleanup）
         if wt_session is not None:

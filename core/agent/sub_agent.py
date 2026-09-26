@@ -273,7 +273,8 @@ async def run_to_completion(
 
     Args:
         agent: Agent 实例（type: Any 避免循环导入）。
-        conv: 子 Agent 的 ConversationManager（已装填或空白）。
+        conv: 子 Agent 的 ConversationManager。**必须与 `agent._conversation`
+            是同一个对象**（见下方收口说明）。
         task: 子任务描述。非空时追加为 user 消息。
         events: 可选的外部事件队列，Tool/Text 事件会被 put 进去。
 
@@ -284,6 +285,33 @@ async def run_to_completion(
         MaxTurnsReached: 触达 max_turns 时抛出，携带最后文本。
         asyncio.CancelledError: 被取消时透传。
     """
+    # ── 会话**同源**收口（根因见 `docs/spec_subagent_empty_output.md`）──
+    #
+    # `Agent._execute_tools` 把**工具结果写进 `self._conversation`**，而本循环从
+    # `conv` 读写助手消息。两者不是同一个对象时，消息会被劈成两半：
+    #   助手消息（含 tool_calls）→ conv ／ 工具结果 → agent._conversation
+    # ⇒ 下一轮 `conv.to_api_format()` 里**没有工具结果** ⇒ 模型看不到任何工具输出
+    # ⇒ 它反复重发同一批调用 ⇒ 跑满 `max_turns` ⇒ **返回空字符串**。
+    #
+    # 这正是"Explore 子 Agent 完整回合产出空内容"的根因，
+    # 且 `Agent 工具` / `pane 队友` / `后台任务` **三个入口都中招**
+    # （只有 skill fork 恰好把同一个对象传进来）。
+    #
+    # 收口策略：**告警 + 纠偏到 agent 自己的会话**。刻意不 raise ——
+    # pane 队友路径本机不易起，把"静默空产出"换成"崩溃"更难排查；
+    # 纠偏既不掩盖问题（有 warning），又能立刻止血。
+    agent_conv = getattr(agent, "_conversation", None)
+    if agent_conv is not None and conv is not agent_conv:
+        logger.warning(
+            "run_to_completion 收到的会话与 agent._conversation 不是同一个对象"
+            "（%s vs %s）→ 已收口到 agent 自己的会话。"
+            "两者不同会让工具结果与助手消息分裂、模型看不到工具输出，"
+            "表现为回合产出空内容。请修调用方（spec_subagent_empty_output.md）。",
+            id(conv),
+            id(agent_conv),
+        )
+        conv = agent_conv
+
     # 安全网：`ask` 必须有人应答，否则会停在 `await` 上无限期挂死。
     # 放在最开头、`agent._loop` 分支**之前**，这样连自定义 loop 也覆盖。
     _ensure_ask_responder(agent)
