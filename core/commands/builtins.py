@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core.commands.builtin_agents import handle_agents
 from core.commands.builtin_hooks import handle_hooks
 from core.commands.builtin_local import (
     handle_memory,
@@ -29,7 +30,7 @@ from core.commands.types import Command, Kind
 
 
 def register_builtins(reg: Registry) -> None:
-    """注册 11 条内置命令 + 1 条 skill 管理命令。
+    """注册全部内置命令（数量不再写进 docstring —— 曾经写着 11 条、实际 20 条）。
 
     /review 不再是硬编码命令——它现在作为内置 Skill 提供，
     通过 register_skills_as_commands 自动注册。
@@ -160,6 +161,17 @@ def register_builtins(reg: Registry) -> None:
             description="管理团队（list / info <name> / delete <name> [--force] / kill <member>）",
             kind=Kind.LOCAL,
             handler=handle_team,
+        )
+    )
+    reg.register(
+        Command(
+            name="agents",
+            description=(
+                "后台任务/队友：列表、下钻 transcript、单独停掉、对它说话"
+                "（/agents [all|show <sel>|stop <sel>|tell <sel> <消息>]）"
+            ),
+            kind=Kind.LOCAL,
+            handler=handle_agents,
         )
     )
     reg.register(

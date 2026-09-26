@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from core.permissions.modes import PermissionMode
+from core.task.view import DEFAULT_TAIL
 
 if TYPE_CHECKING:
     from core.hooks.rules import HookRule
@@ -20,6 +21,7 @@ class UI(Protocol):
     # ── 输出 ──
     def println(self, msg: str) -> None: ...
     def error(self, msg: str) -> None: ...
+    def print_markup(self, msg: str) -> None: ...
 
     # ── 模式 ──
     def mode(self) -> PermissionMode: ...
@@ -70,6 +72,14 @@ class UI(Protocol):
     async def team_delete(self, name: str, force: bool = False) -> str: ...
     async def team_kill(self, member: str) -> str: ...
 
+    # ── 后台任务 / 队友下钻与干预（spec_teammate_inspect）──
+    def agent_list_lines(self, show_all: bool = False) -> list[str]: ...
+    def agent_show_lines(
+        self, sel: str, tail: int = DEFAULT_TAIL, full: bool = False
+    ) -> list[str]: ...
+    async def agent_stop(self, sel: str) -> str: ...
+    async def agent_tell(self, sel: str, message: str) -> str: ...
+
     # ── 会话状态系统（spec_session_state）──
     def session_state(self) -> object | None: ...
 
@@ -89,6 +99,9 @@ class NopUI:
         pass
 
     def error(self, msg: str) -> None:
+        pass
+
+    def print_markup(self, msg: str) -> None:
         pass
 
     def mode(self) -> PermissionMode:
@@ -190,6 +203,22 @@ class NopUI:
         return "not implemented"
 
     async def team_kill(self, member: str) -> str:
+        return "not implemented"
+
+    # ── 后台任务 / 队友下钻与干预 ──
+
+    def agent_list_lines(self, show_all: bool = False) -> list[str]:
+        return []
+
+    def agent_show_lines(
+        self, sel: str, tail: int = DEFAULT_TAIL, full: bool = False
+    ) -> list[str]:
+        return []
+
+    async def agent_stop(self, sel: str) -> str:
+        return "not implemented"
+
+    async def agent_tell(self, sel: str, message: str) -> str:
         return "not implemented"
 
     # ── 会话状态系统 ──

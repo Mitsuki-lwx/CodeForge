@@ -148,6 +148,7 @@ def test_register_builtins_all_registered():
     reg = _builtin_reg()
     names = [c.name for c in reg.visible()]
     expected = [
+        "agents",
         "clear",
         "compact",
         "constraint",
@@ -169,7 +170,7 @@ def test_register_builtins_all_registered():
         "todo",
         "worktree",
     ]
-    assert names == expected  # 字典序且 15 条（/review 改为 Skill 提供，/hooks /worktree /team /observability 新增）
+    assert names == expected  # 字典序（/agents 为后台任务下钻与干预新增）
 
 
 def test_register_builtins_no_collision():

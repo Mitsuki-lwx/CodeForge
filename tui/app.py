@@ -57,6 +57,8 @@ from core.permissions.hitl import HITLChoice
 from core.permissions.modes import PermissionMode
 from core.permissions.rules import extract_content
 from core.permissions.upgrade import ApprovalUpgrader
+from core.task.view import DEFAULT_TAIL
+from tui import agent_view
 from tui.completer import CommandCompleter
 from tui.hitl_dialog import show_hitl_dialog
 from tui.provider_select import select_provider
@@ -130,6 +132,9 @@ class CodeForgeApp:
     skill_executor: object | None = None  # core.skills.SkillExecutor 实例
     hook_runner: object | None = None  # core.hooks.HookRunner 实例
     task_mgr: object | None = None  # core.task.manager.BackgroundTaskManager 实例
+    # 排队中的"对某个队友说的话"（task_id → 消息列表）。任务跑完时由
+    # `_consume_task_done` 投递；不持久化，进程退出即丢（spec_teammate_inspect §3.4）。
+    pending_agent_messages: dict[str, list[str]] = field(default_factory=dict)
     subagent_catalog: object | None = None  # core.agent.role_loader.Catalog 实例
     wt_manager: object | None = None  # core.worktree.manager.WorktreeManager 实例
     team_mgr: object | None = None  # core.team.manager.Manager 实例
@@ -173,6 +178,27 @@ class CodeForgeApp:
 
     def error(self, msg: str) -> None:
         self.console.print(f"[red]x {msg}[/]")
+
+    def print_markup(self, msg: str) -> None:
+        """按普通输出打印（**不套 dim**）—— 供列表/transcript 这类正文用。"""
+        self.console.print(msg)
+
+    # ── 后台任务 / 队友：列表、下钻、干预（spec_teammate_inspect）──
+    # 实现都在 tui/agent_view.py（渲染在 core/task/view.py，纯函数）。
+
+    def agent_list_lines(self, show_all: bool = False) -> list[str]:
+        return agent_view.list_lines(self, show_all=show_all)
+
+    def agent_show_lines(
+        self, sel: str, tail: int = DEFAULT_TAIL, full: bool = False
+    ) -> list[str]:
+        return agent_view.show_lines(self, sel, tail=tail, full=full)
+
+    async def agent_stop(self, sel: str) -> str:
+        return await agent_view.stop(self, sel)
+
+    async def agent_tell(self, sel: str, message: str) -> str:
+        return await agent_view.tell(self, sel, message)
 
     def mode(self) -> PermissionMode:
         return self.agent.permission_mode
@@ -1434,6 +1460,14 @@ async def _consume_task_done(app: CodeForgeApp) -> None:
             f"Result: {result}\n"
             f"</task-notification>"
         )
+
+        # ── 人排队的消息：任务落下就替他说出去（spec_teammate_inspect §3.4）──
+        # 顺序要紧：**先**按第一轮结果组装通知，**再**投递续派 —— 续派会把 result
+        # 清空、状态置回 RUNNING；反过来先投递，通知里就没结果了（变异注入验过）。
+        note = await agent_view.deliver_pending(app, task_id)
+        if note:
+            notification += f"\n{note}"
+            app.console.print(f"[red]{note}[/]" if note.startswith("x ") else f"[dim]{note}[/]")
 
         # 注入到 runtime pending_reminders（供主 Agent 下一次 run 消费）
         if app.runtime is not None:

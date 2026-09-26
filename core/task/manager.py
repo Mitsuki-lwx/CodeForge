@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import sys
 import time
@@ -68,7 +69,7 @@ class PartialState:
 
 
 class TaskBusyError(Exception):
-    """任务状态不允许当前操作（如 send_message 给非 COMPLETED 任务）。"""
+    """任务状态不允许当前操作（如 send_message 给 RUNNING 任务）。"""
 
 
 class TaskNotFoundError(Exception):
@@ -78,7 +79,7 @@ class TaskNotFoundError(Exception):
 class BackgroundTaskManager:
     """管理后台任务。协程安全（单事件循环）。
 
-    提供 launch / adopt_running / stop / send_message / get / list 等操作，
+    提供 launch / adopt_running / stop / send_message / send_message_to / get / list 等操作，
     通过 subscribe_done() 返回的 asyncio.Queue 通知任务完成。
     """
 
@@ -165,6 +166,8 @@ class BackgroundTaskManager:
         events: asyncio.Queue = asyncio.Queue(maxsize=64)
 
         async def _runner() -> None:
+            # ⚠️ 不变量：`try` 之前**不得新增 `await`** —— 否则"已被调度但还没进
+            # try"的窗口里收到取消，`stop()` 的 `CORO_CREATED` 判定会漏（见 stop 说明）。
             # 边跑边聚合：否则运行期间 `tool_count`/`last_activity` 恒为 0/""，
             # 且事件队列（maxsize=64）满了之后生产侧静默丢弃 → 最终计数也被截断。
             # 见 `docs/spec_teammate_status.md` §1.3。
@@ -252,6 +255,12 @@ class BackgroundTaskManager:
     async def stop(self, task_id: str) -> bool:
         """停止一个运行中的后台任务。
 
+        ★ `cancel()` 对**从未被事件循环调度过**的协程（`CORO_CREATED`）只是把
+        `CancelledError` 丢在协程起点：`_runner` 的函数体**一行都不会执行**，
+        于是"置终态 / 收尾聚合 / done 通知"三件事全都没发生 —— 任务会**永远停在
+        `RUNNING`**（状态行与 `/agents` 一直显示"运行中"，无头模式则一直等它）。
+        真链路复现与判定见 `docs/spec_teammate_inspect.md` §10。这里由 `stop` 兜底。
+
         Args:
             task_id: 任务 ID。
 
@@ -261,12 +270,35 @@ class BackgroundTaskManager:
         bt = self._tasks.get(task_id)
         if bt is None:
             return False
-        if bt.handle is not None and not bt.handle.done():
-            bt.handle.cancel()
+        handle = bt.handle
+        if handle is None or handle.done():
+            return True
+
+        # 判定必须在 `cancel()` **之前**、且中间不能有 await：
+        # 单线程事件循环里这段是原子的，"查"与"取消"之间任务不可能启动。
+        never_started = _coro_state(handle) == "CORO_CREATED"
+        handle.cancel()
+        if never_started:
+            self._finalize_never_started(bt, task_id)
+            await self._notify_done(task_id)
         return True
 
+    def _finalize_never_started(self, bt: BackgroundTask, task_id: str) -> None:
+        """给"从未启动就被取消"的任务补终态（`_runner` 不会执行，只能这里补）。"""
+        bt.status = TaskStatus.CANCELLED
+        bt.result = "[cancelled]"
+        bt.err = None
+        bt.end_time = time.monotonic()
+        try:
+            self._done.put_nowait(task_id)
+        except asyncio.QueueFull:
+            print(
+                f"task manager: done queue full, dropping notification for {task_id}",
+                file=sys.stderr,
+            )
+
     async def send_message(self, name: str, message: str) -> str:
-        """向已完成的存活后台 Agent 续派新任务。
+        """向已停下的后台 Agent 续派新任务（按**名字**）。
 
         Args:
             name: 任务名称（Agent 工具 name 参数）。
@@ -277,19 +309,34 @@ class BackgroundTaskManager:
 
         Raises:
             TaskNotFoundError: name 未找到。
-            TaskBusyError: 任务状态不是 COMPLETED。
+            TaskBusyError: 任务正在跑（RUNNING）。
         """
         task_id = self._by_name.get(name)
         if task_id is None:
             raise TaskNotFoundError(f"no task with name '{name}'")
+        return await self.send_message_to(task_id, message)
 
+    async def send_message_to(self, task_id: str, message: str) -> str:
+        """向已停下的后台 Agent 续派新任务（按 **task_id**）。
+
+        与 `send_message` 的区别只有寻址方式：`AgentTool` 的 `name` 是**可选**参数，
+        未命名的后台任务很常见，只有 id 才找得到它。
+
+        非 RUNNING 即可续派（`COMPLETED` / `FAILED` / `CANCELLED`）——
+        "失败了接着说一句"是合理诉求；**RUNNING 仍必须拒绝**，
+        否则就是对正在跑的会话并发写 user 消息。
+
+        Raises:
+            TaskNotFoundError: task_id 未找到。
+            TaskBusyError: 任务正在跑（RUNNING）。
+        """
         bt = self._tasks.get(task_id)
         if bt is None:
             raise TaskNotFoundError(f"task '{task_id}' no longer exists")
 
-        if bt.status != TaskStatus.COMPLETED:
+        if bt.status == TaskStatus.RUNNING:
             raise TaskBusyError(
-                f"task '{name}' is {bt.status.name}, not COMPLETED"
+                f"task '{getattr(bt, 'name', '') or task_id}' is RUNNING, not stopped"
             )
 
         # 追加新 user 消息并重新启动
@@ -303,6 +350,8 @@ class BackgroundTaskManager:
         events: asyncio.Queue = asyncio.Queue(maxsize=64)
 
         async def _runner() -> None:
+            # ⚠️ 不变量：`try` 之前**不得新增 `await`** —— 否则"已被调度但还没进
+            # try"的窗口里收到取消，`stop()` 的 `CORO_CREATED` 判定会漏（见 stop 说明）。
             # 边跑边聚合：否则运行期间 `tool_count`/`last_activity` 恒为 0/""，
             # 且事件队列（maxsize=64）满了之后生产侧静默丢弃 → 最终计数也被截断。
             # 见 `docs/spec_teammate_status.md` §1.3。
@@ -358,6 +407,18 @@ class BackgroundTaskManager:
 # 运行中聚合事件队列的节奏（秒）。既决定状态行/`TaskList` 的刷新粒度，
 # 也决定队列能被及时排空（maxsize=64，生产侧满了会静默丢弃）。
 _EVENT_DRAIN_INTERVAL = 0.4
+
+
+def _coro_state(handle: asyncio.Task) -> str:
+    """协程状态字符串（取不到返回空串）。
+
+    `"CORO_CREATED"` = **从未被事件循环调度过** —— 此时 `cancel()` 不会执行任何
+    函数体代码，取消只能由调用方自己补收尾（见 `stop`）。
+    """
+    try:
+        return inspect.getcoroutinestate(handle.get_coro())
+    except Exception:  # noqa: BLE001 —— 取不到就当作"已启动"，走原有路径
+        return ""
 
 
 async def _drain_events_periodically(queue: asyncio.Queue, bt: BackgroundTask) -> None:

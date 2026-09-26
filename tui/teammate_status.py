@@ -13,72 +13,35 @@ from __future__ import annotations
 
 import shutil
 import time
-import unicodedata
 from typing import Any
 
 from core.task.manager import TaskStatus
 
-# 显示名 / 最近动作的显示上限（**列**，中文算 2 列）
-_NAME_MAX_COLS = 20
+# 显示名 / 宽度截断 / 耗时**与 /agents 下钻共用同一份实现**（core/task/view.py）：
+# 上一轮真链路已证明"显示名取值顺序"是坑（`AgentTool.name` 常常为空），
+# 两份规则一定会漂移。这里只做转发，行为逐字不变（既有测试守住）。
+from core.task.view import (
+    NAME_MAX_COLS as _NAME_MAX_COLS,
+)
+from core.task.view import (
+    clip as _clip,
+)
+from core.task.view import (
+    disp_width,
+    display_name,
+    format_elapsed,
+)
+
+# 最近动作的显示上限（**列**，中文算 2 列）
 _ACTIVITY_MAX_COLS = 12
 # 终端再窄也至少按这么宽排版（否则截出来没意义）
 _MIN_WIDTH = 20
 _FALLBACK_WIDTH = 80
 
 
-def _cols(ch: str) -> int:
-    """单字符显示宽度：东亚全角算 2 列。"""
-    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-
-
-def disp_width(text: str) -> int:
-    """字符串显示宽度（列）。中英混排时不能直接用 `len`。"""
-    return sum(_cols(c) for c in text)
-
-
-def _clip(text: str, max_cols: int) -> str:
-    """按**显示宽度**截断并加省略号。"""
-    if max_cols <= 1:
-        return ""
-    if disp_width(text) <= max_cols:
-        return text
-    out: list[str] = []
-    used = 0
-    for ch in text:
-        w = _cols(ch)
-        if used + w > max_cols - 1:
-            break
-        out.append(ch)
-        used += w
-    return "".join(out) + "…"
-
-
-def format_elapsed(seconds: float) -> str:
-    """耗时：`12s` / `1m23s`。"""
-    s = max(0, int(seconds))
-    if s < 60:
-        return f"{s}s"
-    return f"{s // 60}m{s % 60:02d}s"
-
-
 def _name_of(bt: Any) -> str:
-    """显示名：`name` → 任务文本首行 → id 短码。
-
-    ★ 实测（真链路）：`AgentTool` 的 `name` 是**可选**参数，后台子 Agent 常常
-    没有名字，于是状态行只剩一串 hex（`12def532`）—— 对"看得见在干什么"
-    毫无帮助。所以退回**任务文本首行**，它天然说明了这个任务在做什么。
-    """
-    name = str(getattr(bt, "name", "") or "").strip()
-    if name:
-        return _clip(name, _NAME_MAX_COLS)
-
-    for line in str(getattr(bt, "task", "") or "").splitlines():
-        head = line.strip()
-        if head:
-            return _clip(head, _NAME_MAX_COLS)
-
-    tid = str(getattr(bt, "id", "") or "").removeprefix("task_")
-    return _clip(tid[:8], _NAME_MAX_COLS) or "?"
+    """显示名：`name` → 任务文本首行 → id 短码（实现见 `core/task/view.py`）。"""
+    return display_name(bt, _NAME_MAX_COLS)
 
 
 def format_task(bt: Any, now: float) -> str:

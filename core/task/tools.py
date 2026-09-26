@@ -184,7 +184,11 @@ class TaskStopTool(Tool):
 
 
 class SendMessageTool(Tool):
-    """向已完成的存活后台 Agent 续派新任务。"""
+    """向**已停下**（非 RUNNING）的存活后台 Agent 续派新任务。
+
+    状态放宽说明见 `docs/spec_teammate_inspect.md` §3.5：失败/取消的任务也能接着说一句，
+    正在跑的仍拒绝（不能对并发中的会话再写一条 user 消息）。
+    """
 
     def __init__(self, manager: BackgroundTaskManager) -> None:
         self._manager = manager
@@ -194,7 +198,10 @@ class SendMessageTool(Tool):
         return "SendMessage"
 
     def description(self) -> str:
-        return "Send a follow-up task to a completed background sub-agent by its name."
+        return (
+            "Send a follow-up task to a stopped (not running) background sub-agent by its name. "
+            "Works for completed, failed or cancelled tasks; a running task rejects it."
+        )
 
     def input_schema(self) -> dict[str, Any]:
         return {

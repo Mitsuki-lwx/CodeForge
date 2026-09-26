@@ -82,6 +82,28 @@ def _ctx() -> ExecutionContext:
     return ExecutionContext(cwd=Path.cwd(), session_id="test")
 
 
+def _register_task(
+    mgr: BackgroundTaskManager,
+    tid: str,
+    name: str,
+    status: TaskStatus,
+    *,
+    conv: ConversationManager | None = None,
+) -> BackgroundTask:
+    """手工登记一个任务（不进 `launch`，不真跑）。"""
+    bt = BackgroundTask(
+        id=tid,
+        name=name,
+        sub_agent=_make_agent(),
+        conv=conv if conv is not None else ConversationManager(),
+        status=status,
+    )
+    mgr._tasks[tid] = bt
+    if name:
+        mgr._by_name[name] = tid
+    return bt
+
+
 # ── launch 与状态 ──────────────────────────────────────────────────
 
 
@@ -300,6 +322,77 @@ async def test_send_message_not_found(manager):
         await manager.send_message("ghost", "hello")
 
 
+# ── send_message_to：按 id 续派（spec_teammate_inspect §3.5）────────
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_unnamed_task_by_id(monkeypatch, fake_run):
+    """★ 未命名任务也能续派 —— 这是加 `send_message_to` 的直接动机。"""
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    conv = ConversationManager()
+
+    task_id = await mgr.launch(_make_agent("first"), conv, "", "task one")
+    q = mgr.subscribe_done()
+    await asyncio.wait_for(q.get(), timeout=3)
+    assert mgr.get(task_id).status == TaskStatus.COMPLETED
+
+    same_id = await mgr.send_message_to(task_id, "task two")
+    assert same_id == task_id
+    assert mgr.get(task_id).status == TaskStatus.RUNNING
+
+    await asyncio.wait_for(q.get(), timeout=3)
+    assert mgr.get(task_id).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_running_raises():
+    """RUNNING 仍必须拒绝：不能对并发中的会话再写一条 user 消息。"""
+    mgr = BackgroundTaskManager()
+    _register_task(mgr, "task_busy2", "busy2", TaskStatus.RUNNING)
+    with pytest.raises(TaskBusyError):
+        await mgr.send_message_to("task_busy2", "hi")
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_unknown_id():
+    mgr = BackgroundTaskManager()
+    with pytest.raises(TaskNotFoundError):
+        await mgr.send_message_to("task_ghost", "hi")
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_allows_failed(monkeypatch, fake_run):
+    """★ 状态放宽：失败的任务也能"接着说一句"。"""
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    _register_task(mgr, "task_failed1", "f1", TaskStatus.FAILED, conv=ConversationManager())
+
+    await mgr.send_message_to("task_failed1", "重试一次")
+    assert mgr.get("task_failed1").status == TaskStatus.RUNNING
+
+    q = mgr.subscribe_done()
+    await asyncio.wait_for(q.get(), timeout=3)
+    assert mgr.get("task_failed1").status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_resets_progress(monkeypatch, fake_run):
+    """续派要把上一轮的产物清干净，否则状态行/列表会显示陈旧步数。"""
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
+    mgr = BackgroundTaskManager()
+    bt = _register_task(mgr, "task_reset", "r", TaskStatus.COMPLETED, conv=ConversationManager())
+    bt.tool_count = 9
+    bt.last_activity = "Grep"
+    bt.result = "old"
+
+    await mgr.send_message_to("task_reset", "再来")
+
+    assert bt.tool_count == 0
+    assert bt.last_activity == ""
+    assert bt.result == ""
+
+
 @pytest.mark.asyncio
 async def test_send_message_busy():
     """send_message 给 RUNNING 任务 → TaskBusyError。"""
@@ -472,3 +565,76 @@ def test_task_tools_are_system_tools(manager):
     """
     for cls in (TaskListTool, TaskGetTool, TaskStopTool, SendMessageTool):
         assert cls(manager).is_system_tool is True, f"{cls.__name__} 未标 system tool"
+
+
+# ── stop：取消必须留下终态（spec_teammate_inspect §10）──────────────
+
+
+@pytest.mark.asyncio
+async def test_stop_never_started_task_finalizes(monkeypatch):
+    """★ 派出去**立刻**停：协程从未被调度，`_runner` 不会执行。
+
+    实测过：`cancel()` 只把 `CancelledError` 丢在协程起点，函数体一行都不跑，
+    于是终态/聚合/完成通知全都没有 —— 任务永远停在 RUNNING。
+    """
+    import inspect
+
+    async def _slow(agent, conv, task="", events=None):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", _slow)
+
+    mgr = BackgroundTaskManager()
+    fired: list[str] = []
+
+    async def _cb(task_id: str) -> None:
+        fired.append(task_id)
+
+    mgr.on_task_done(_cb)
+    q = mgr.subscribe_done()
+
+    task_id = await mgr.launch(_make_agent(), ConversationManager(), "alice", "做事")
+    handle = mgr.get(task_id).handle
+    # 前置条件自检：这一刻协程确实**还没被调度**（否则本用例什么都没测到）
+    assert inspect.getcoroutinestate(handle.get_coro()) == "CORO_CREATED"
+
+    assert await mgr.stop(task_id) is True
+    await asyncio.sleep(0.05)
+
+    bt = mgr.get(task_id)
+    assert bt.status == TaskStatus.CANCELLED
+    assert bt.result == "[cancelled]"
+    assert bt.end_time > 0
+    assert q.qsize() == 1 and q.get_nowait() == task_id
+    assert fired == [task_id]
+
+
+@pytest.mark.asyncio
+async def test_stop_started_task_notifies_exactly_once(monkeypatch):
+    """已启动的协程自己会收尾 —— 兜底逻辑不能让它多发一次完成通知。"""
+    async def _slow(agent, conv, task="", events=None):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", _slow)
+
+    mgr = BackgroundTaskManager()
+    q = mgr.subscribe_done()
+    task_id = await mgr.launch(_make_agent(), ConversationManager(), "bob", "做事")
+    await asyncio.sleep(0)  # 让它跑起来（进入 try 之后挂住）
+
+    assert await mgr.stop(task_id) is True
+    await asyncio.sleep(0.05)
+
+    assert mgr.get(task_id).status == TaskStatus.CANCELLED
+    assert q.qsize() == 1, f"完成通知应恰好一条，实际 {q.qsize()}"
+
+
+@pytest.mark.asyncio
+async def test_stop_unknown_and_finished(manager):
+    """找不到 → False；已结束 → True 且不重复收尾。"""
+    assert await manager.stop("task_ghost") is False
+
+    mgr = BackgroundTaskManager()
+    bt = _register_task(mgr, "task_done1", "d", TaskStatus.COMPLETED)
+    assert await mgr.stop("task_done1") is True
+    assert bt.status == TaskStatus.COMPLETED  # 没有把它改成 CANCELLED
