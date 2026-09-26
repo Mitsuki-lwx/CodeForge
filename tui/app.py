@@ -61,6 +61,7 @@ from tui.completer import CommandCompleter
 from tui.hitl_dialog import show_hitl_dialog
 from tui.provider_select import select_provider
 from tui.select import read_line, select_from_options
+from tui.teammate_status import build_status_text
 
 CAT_ASCII = r"""      /\_/\
      (o.o)
@@ -1119,6 +1120,7 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
     bundle: SessionBundle | None = None
     app: CodeForgeApp | None = None
     _task_done_consumer: asyncio.Task | None = None
+    _status_ticker: asyncio.Task | None = None
     # 审批升级通道：只有**交互式 TUI** 才建。无头单任务（`--task`）保持既有语义
     # （ask 由无人值守策略代答），不能因为多了个通道就改变它的行为。
     _approval_upgrader: ApprovalUpgrader | None = None
@@ -1227,6 +1229,9 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
             getattr(_router_cfg, "cheap_tier", "cheap") if _router_cfg else "cheap"
         )
 
+        # ── 后台任务 / 队友状态行刷新（只读可见性，见 spec_teammate_status）──
+        _status_ticker = asyncio.create_task(_refresh_status_bar(app))
+
         while True:
             # ── 输入 ──
             try:
@@ -1237,6 +1242,9 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
                 )
                 text = await session.prompt_async(
                     ANSI(f"\033[2m{hint}>\033[0m "),
+                    # 状态行：后台任务 / 队友跑到哪了。返回 None 时不占行
+                    # （无运行中任务 = 与引入本功能前逐字一致）。
+                    bottom_toolbar=lambda: build_status_text(app.task_mgr),
                 )
                 text = text.strip()
             except (EOFError, KeyboardInterrupt):
@@ -1317,6 +1325,9 @@ async def _run_async(provider, task: str = "", providers=None, loop: str = "") -
         # ── 停止 task notification 消费 ──
         if _task_done_consumer is not None and not _task_done_consumer.done():
             _task_done_consumer.cancel()
+        # ── 停止状态行刷新 ──
+        if _status_ticker is not None and not _status_ticker.done():
+            _status_ticker.cancel()
         # ── 取消所有后台子 Agent ──
         cur_task_mgr = app.task_mgr if app is not None else None
         if cur_task_mgr is not None:
@@ -1444,6 +1455,39 @@ async def _consume_task_done(app: CodeForgeApp) -> None:
                 await _inject_and_run(app, notification)
             except Exception as e:  # noqa: BLE001 —— 唤醒失败仅告警，不阻塞通知循环
                 app.console.print(f"[dim]task-done wake failed: {e}[/]")
+
+
+# ── 状态行刷新（后台任务 / 队友可见性）─────────────────────────────
+
+# 检查节奏（秒）。只做"取字段 + 拼字符串"的纯计算，无 IO。
+_STATUS_TICK = 0.5
+
+
+async def _refresh_status_bar(app: CodeForgeApp) -> None:
+    """定期让提示符重绘，使 `bottom_toolbar` 反映最新任务状态。
+
+    只在**渲染文本发生变化**时 invalidate：
+
+    - 没有运行中的后台任务 → 文本恒为 `None`，首轮之后**不再触发任何重绘**（零开销）
+    - 提示符未活跃（Agent 正在跑 / 无头模式）→ 跳过
+
+    文本本身由 `tui.teammate_status.build_status_text`（纯函数）产出。
+    动机见 `docs/spec_teammate_status.md`。
+    """
+    last: str | None = None
+    while True:
+        await asyncio.sleep(_STATUS_TICK)
+        text = build_status_text(getattr(app, "task_mgr", None))
+        if text == last:
+            continue
+        last = text
+        prompt_app = getattr(getattr(app, "session", None), "app", None)
+        if prompt_app is None or not getattr(prompt_app, "is_running", False):
+            continue
+        try:
+            prompt_app.invalidate()
+        except Exception:  # noqa: BLE001, S110 —— 提示符正要退出时忽略
+            pass
 
 
 async def _spinner(stream, interval: float = 0.2) -> None:

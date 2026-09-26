@@ -165,6 +165,10 @@ class BackgroundTaskManager:
         events: asyncio.Queue = asyncio.Queue(maxsize=64)
 
         async def _runner() -> None:
+            # 边跑边聚合：否则运行期间 `tool_count`/`last_activity` 恒为 0/""，
+            # 且事件队列（maxsize=64）满了之后生产侧静默丢弃 → 最终计数也被截断。
+            # 见 `docs/spec_teammate_status.md` §1.3。
+            drainer = asyncio.create_task(_drain_events_periodically(events, bt))
             try:
                 # 动态导入避免循环依赖
                 from core.agent.sub_agent import run_to_completion as _rtc
@@ -181,6 +185,12 @@ class BackgroundTaskManager:
                 bt.result = f"[failed] {e}"
                 logger.warning("background task %s failed: %s", task_id, e)
             finally:
+                # 立刻取消聚合协程，**不 `await`**：收尾路径上不能新增 await 点 ——
+                # 否则 `_notify_done` 会被推迟到后续事件循环迭代才执行，
+                # 破坏既有调用方 `sleep(0.01)` 量级的时间假设（实测 2 项测试因此变红）。
+                # 与 `cancel_all` 一致（只 cancel，不 await）。
+                # 队列已在下一行被 `_aggregate_events` 收干，晚到的 drain 不会再加计数。
+                drainer.cancel()
                 bt.end_time = time.monotonic()
                 _aggregate_events(events, bt)
                 try:
@@ -293,6 +303,10 @@ class BackgroundTaskManager:
         events: asyncio.Queue = asyncio.Queue(maxsize=64)
 
         async def _runner() -> None:
+            # 边跑边聚合：否则运行期间 `tool_count`/`last_activity` 恒为 0/""，
+            # 且事件队列（maxsize=64）满了之后生产侧静默丢弃 → 最终计数也被截断。
+            # 见 `docs/spec_teammate_status.md` §1.3。
+            drainer = asyncio.create_task(_drain_events_periodically(events, bt))
             try:
                 from core.agent.sub_agent import run_to_completion as _rtc
 
@@ -307,6 +321,12 @@ class BackgroundTaskManager:
                 bt.err = e
                 bt.result = f"[failed] {e}"
             finally:
+                # 立刻取消聚合协程，**不 `await`**：收尾路径上不能新增 await 点 ——
+                # 否则 `_notify_done` 会被推迟到后续事件循环迭代才执行，
+                # 破坏既有调用方 `sleep(0.01)` 量级的时间假设（实测 2 项测试因此变红）。
+                # 与 `cancel_all` 一致（只 cancel，不 await）。
+                # 队列已在下一行被 `_aggregate_events` 收干，晚到的 drain 不会再加计数。
+                drainer.cancel()
                 bt.end_time = time.monotonic()
                 _aggregate_events(events, bt)
                 try:
@@ -333,6 +353,29 @@ class BackgroundTaskManager:
         self._counter += 1
         import secrets
         return f"task_{secrets.token_hex(4)}"
+
+
+# 运行中聚合事件队列的节奏（秒）。既决定状态行/`TaskList` 的刷新粒度，
+# 也决定队列能被及时排空（maxsize=64，生产侧满了会静默丢弃）。
+_EVENT_DRAIN_INTERVAL = 0.4
+
+
+async def _drain_events_periodically(queue: asyncio.Queue, bt: BackgroundTask) -> None:
+    """任务**运行期间**周期性聚合事件队列。
+
+    没有它时 `_aggregate_events` 只在收尾被调用一次，后果有两个：
+
+    1. 运行中 `bt.tool_count` 恒为 `0`、`bt.last_activity` 恒为 `""` ——
+       而 `core/task/tools.py` 把这两个字段**给模型看**（`TaskList`/`TaskGet`），
+       模型据此判断"任务在不在动"，拿到的一直是空值；
+    2. 队列 `maxsize=64`，生产侧 `except asyncio.QueueFull: pass` **静默丢弃** ——
+       没有消费方时超过 64 个事件直接丢掉，连**最终**计数都被截断。
+
+    见 `docs/spec_teammate_status.md` §1.3。
+    """
+    while True:
+        await asyncio.sleep(_EVENT_DRAIN_INTERVAL)
+        _aggregate_events(queue, bt)
 
 
 def _aggregate_events(queue: asyncio.Queue, bt: BackgroundTask) -> None:

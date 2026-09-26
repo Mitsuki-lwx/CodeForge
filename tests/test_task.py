@@ -141,6 +141,106 @@ async def test_launch_aggregates_tool_count(monkeypatch, fake_run):
 
 
 @pytest.mark.asyncio
+async def test_tool_count_visible_while_running(monkeypatch):
+    """★ **运行期间**就能读到 tool_count / last_activity。
+
+    修复前 `_aggregate_events` 只在收尾被调用一次 ⇒ 运行中恒为 0/""，
+    而 `core/task/tools.py` 把这两个字段**给模型看**（TaskList / TaskGet）——
+    模型据此判断"任务在不在动"，拿到的一直是空值。
+    见 docs/spec_teammate_status.md §1.3。
+    """
+    release = asyncio.Event()
+
+    async def _slow(agent, conv, task="", events=None):
+        if events is not None:
+            events.put_nowait(("tool", "grep"))
+            events.put_nowait(("tool", "read_file"))
+        await release.wait()  # 卡住：让断言发生在"运行中"这一时刻
+        return "done"
+
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", _slow)
+    mgr = BackgroundTaskManager()
+    task_id = await mgr.launch(_make_agent("res"), ConversationManager(), "w", "task")
+    bt = mgr.get(task_id)
+    assert bt is not None
+
+    for _ in range(60):  # 等聚合协程至少跑一拍（间隔 0.4s）
+        await asyncio.sleep(0.05)
+        if bt.tool_count:
+            break
+
+    assert bt.status == TaskStatus.RUNNING, "断言必须发生在任务结束前"
+    assert bt.tool_count == 2, f"运行中 tool_count 应为 2，实际 {bt.tool_count}"
+    assert bt.last_activity == "read_file"
+
+    release.set()
+    await asyncio.wait_for(mgr.subscribe_done().get(), timeout=3)
+    assert bt.status == TaskStatus.COMPLETED
+    assert bt.tool_count == 2, "收尾后计数不应丢"
+
+
+@pytest.mark.asyncio
+async def test_events_beyond_queue_capacity_not_lost(monkeypatch):
+    """★ 持续产生的事件不再被队列容量(64)截断。
+
+    修复前没人边跑边消费：队列塞满 64 后生产侧
+    `except asyncio.QueueFull: pass` **静默丢弃**（流的 text 事件还会先占满队列，
+    把后来的工具事件挤掉），连最终 `tool_count` 都是被截断的。
+    """
+    total = 100  # > 队列 maxsize(64)
+
+    async def _flood(agent, conv, task="", events=None):
+        for i in range(total):
+            try:
+                events.put_nowait(("tool", f"tool{i}"))
+            except asyncio.QueueFull:
+                pass  # 与生产侧同构：满了就丢
+            await asyncio.sleep(0.01)  # 拉开 ~1s，覆盖多个聚合周期
+        return "done"
+
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", _flood)
+    mgr = BackgroundTaskManager()
+    task_id = await mgr.launch(_make_agent("res"), ConversationManager(), "w", "task")
+    await asyncio.wait_for(mgr.subscribe_done().get(), timeout=20)
+
+    bt = mgr.get(task_id)
+    assert bt is not None
+    assert bt.tool_count == total, f"应计入全部 {total} 个事件，实际 {bt.tool_count}"
+
+
+@pytest.mark.asyncio
+async def test_task_list_tool_exposes_live_progress(monkeypatch):
+    """模型侧（TaskList）在**运行中**就能看到进展 —— 这是上面修复的目的。"""
+    release = asyncio.Event()
+
+    async def _slow(agent, conv, task="", events=None):
+        if events is not None:
+            events.put_nowait(("tool", "grep"))
+        await release.wait()
+        return "done"
+
+    monkeypatch.setattr(sub_agent_mod, "run_to_completion", _slow)
+    mgr = BackgroundTaskManager()
+    await mgr.launch(_make_agent("res"), ConversationManager(), "worker", "task")
+    tool = TaskListTool(mgr)
+
+    data = ""
+    for _ in range(60):
+        await asyncio.sleep(0.05)
+        result = await tool.execute(_ctx(), {})
+        data = result.data
+        if '"tool_count": 1' in data:
+            break
+
+    assert '"status": "running"' in data
+    assert '"tool_count": 1' in data, f"运行中应已可见计数，实际：{data[:200]}"
+    assert '"last_activity": "grep"' in data
+
+    release.set()
+    await asyncio.wait_for(mgr.subscribe_done().get(), timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_stop_nonexistent(manager):
     ok = await manager.stop("nonexistent")
     assert ok is False
