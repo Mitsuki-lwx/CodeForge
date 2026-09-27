@@ -279,10 +279,16 @@ def render_transcript(
     tail: int = DEFAULT_TAIL,
     full: bool = False,
     max_chars: int = MESSAGE_MAX_CHARS,
+    hint_more: str | None = None,
 ) -> list[str]:
     """渲染一个任务的 transcript（头 + 消息 + 尾注）。
 
     头部始终打印任务摘要 —— "这条 transcript 是谁的"永远清楚。
+
+    `hint_more`：截断时给出的"怎么调整"提示。默认 `None` = 用 `/agents show …`
+    这个既有文案（**逐字不变**）；传 `""` 则不给调整提示。
+    ⚠️ `/show` 复用本函数时**必须**传自己的提示，否则会给用户错误的命令
+    （`docs/spec_show_redact.md` §4.2）。
     """
     ts = time.monotonic() if now is None else now
     start = float(getattr(bt, "start_time", 0.0) or 0.0)
@@ -304,6 +310,9 @@ def render_transcript(
     total = len(msgs)
     shown = msgs[-tail:] if tail and tail > 0 else msgs
 
+    if hint_more is None:
+        hint_more = f"/agents show {index or getattr(bt, 'id', '')} --tail {total}"
+
     lines = [head, _SEP]
     if not shown:
         lines.append("  （还没有消息）")
@@ -312,11 +321,219 @@ def render_transcript(
 
     if total > len(shown):
         lines.append(
-            f"  （共 {total} 条消息，显示最近 {len(shown)} 条；"
-            f"调整：/agents show {index or getattr(bt, 'id', '')} --tail {total}）"
+            f"  （共 {total} 条消息，显示最近 {len(shown)} 条；调整：{hint_more}）"
         )
     else:
         lines.append(f"  （共 {total} 条消息）")
+    return lines
+
+
+# ── 主会话 transcript（`/show`）────────────────────────────────
+#
+# 复用 `message_lines` —— **不允许出现第二份消息渲染实现**
+# （`docs/spec_show_redact.md` §4.2 的硬约束）。这里只做"切轮 + 造头尾"。
+
+#: 轮切分时，用户输入摘要的显示上限（列）
+ROUND_PROMPT_MAX_COLS = 48
+#: 概览里单轮显示的消息条数上限
+ROUND_PREVIEW_LINES = 2
+
+
+@dataclass(frozen=True)
+class Round:
+    """一轮 = 一段用户输入 + 其后的工具调用/结果/回复。"""
+
+    number: int
+    messages: list[Any]
+
+    @property
+    def prompt(self) -> str:
+        """本轮的"用户问了什么"（第一条 `You:` 文本；没有就空串）。"""
+        for m in self.messages:
+            if getattr(m, "tool_use_id", None):
+                continue  # 工具结果是 user 角色，但不是"人说的"
+            if _is_system_reminder(m):
+                continue  # 注入的提醒不是人说的
+            if str(getattr(getattr(m, "role", None), "value", "")) == "user":
+                return str(getattr(m, "content", "") or "").strip()
+        return ""
+
+    @property
+    def tool_names(self) -> list[str]:
+        """本轮用到的工具名（按出现顺序，去重相邻重复）。"""
+        out: list[str] = []
+        for m in self.messages:
+            name = str(getattr(m, "tool_name", "") or "")
+            if name and (not out or out[-1] != name):
+                out.append(name)
+        return out
+
+    @property
+    def tool_count(self) -> int:
+        """工具**调用**数（按 tool_use 消息计，不按结果计）。"""
+        return sum(1 for m in self.messages if getattr(m, "tool_name", ""))
+
+    def summary_line(self, elapsed_s: float | None = None) -> str:
+        """概览里的一行：`#2  修掉那个空产出  ·  3个工具 Grep,Edit  ·  1m12s`。"""
+        head = f"  #{pad(str(self.number), 3)} {clip(self.prompt or '（无用户输入）', ROUND_PROMPT_MAX_COLS)}"
+        tail_parts: list[str] = []
+        n = self.tool_count
+        if n:
+            tools = ",".join(self.tool_names[:3])
+            if len(self.tool_names) > 3:
+                tools += "…"
+            tail_parts.append(f"{n}个工具 {tools}")
+        if elapsed_s is not None:
+            tail_parts.append(format_elapsed(elapsed_s))
+        return (head + ("  ·  " + "  ·  ".join(tail_parts) if tail_parts else "")).rstrip()
+
+
+def _is_system_reminder(m: Any) -> bool:
+    return str(getattr(m, "content", "") or "").startswith("[system_reminder]")
+
+
+def split_rounds(messages: Iterable[Any]) -> list[Round]:
+    """把主会话的扁平消息列表切成"轮"。
+
+    规则（`docs/spec_show_redact.md` §4.3，边界逐条定死，不猜）：
+    - 一条**用户文本**消息开启新的一轮
+    - `[system_reminder]` **不算**轮起点（它是注入的提醒，不是人说的）
+    - 工具结果（带 `tool_use_id` 的 user 消息）**不算**轮起点
+    - 开头的工具调用（前面没有用户消息）并入第 1 轮
+    - 空列表 → 空列表（调用方负责给"还没有消息"提示）
+    """
+    items = list(messages)
+    rounds: list[Round] = []
+    cur: list[Any] = []
+
+    def _flush() -> None:
+        if cur:
+            rounds.append(Round(number=len(rounds) + 1, messages=list(cur)))
+            cur.clear()
+
+    for m in items:
+        starts_round = (
+            not getattr(m, "tool_use_id", None)
+            and not _is_system_reminder(m)
+            and str(getattr(getattr(m, "role", None), "value", "")) == "user"
+            and str(getattr(m, "content", "") or "").strip()
+        )
+        if starts_round:
+            _flush()
+        cur.append(m)
+
+    _flush()
+    return rounds
+
+
+def render_session_transcript(
+    messages: Iterable[Any],
+    *,
+    index: int = 0,
+    tail: int = DEFAULT_TAIL,
+    full: bool = False,
+    max_chars: int = MESSAGE_MAX_CHARS,
+    only_tools: bool = False,
+    hint_more: str | None = None,
+) -> list[str]:
+    """渲染**主会话某一轮**的完整内容（`/show <n>`）。
+
+    与 `render_transcript` 的关系：**消息行完全共用** `message_lines`，
+    只有头部/尾注不同（那是必然的 —— 一个是"某个队友"，一个是"第几轮"）。
+
+    `only_tools=True` 时滤掉 `You:` / `Agent:` 文本行，只留工具调用与结果。
+    """
+    rounds = split_rounds(messages)
+    if not rounds:
+        return ["  （还没有消息）"]
+    if index < 1 or index > len(rounds):
+        return [f"x 轮次超出范围：{index}（共 {len(rounds)} 轮）"]
+
+    rnd = rounds[index - 1]
+    shown = rnd.messages
+    if only_tools:
+        shown = [
+            m
+            for m in shown
+            if getattr(m, "tool_name", "") or getattr(m, "tool_use_id", None)
+        ]
+
+    if hint_more is None:
+        hint_more = f"/show {index} --full"
+
+    head = (
+        f"第 {index}/{len(rounds)} 轮  ·  "
+        f"{len(rnd.messages)} 条消息  ·  {rnd.tool_count} 个工具"
+    )
+    prompt = rnd.prompt
+    if prompt:
+        head += f"\n  问：{clip(prompt, 80)}"
+
+    lines = [head, _SEP]
+    if not shown:
+        lines.append("  （本轮没有工具调用；用 /show <n> 不加 --tools 看全部）")
+    for m in shown:
+        lines.extend(message_lines(m, max_chars=max_chars, full=full))
+    return lines
+
+
+def render_round_overview(
+    messages: Iterable[Any],
+    *,
+    tail: int = DEFAULT_TAIL,
+    elapsed_by_round: Mapping[int, float] | None = None,
+) -> list[str]:
+    """渲染主会话的轮次概览（`/show` 无参数）。
+
+    对应头部产品的"按需拉一屏"：当场只给压缩视图，这里才给细节入口。
+    """
+    rounds = split_rounds(messages)
+    if not rounds:
+        return ["还没有可展开的轮次。"]
+
+    el = elapsed_by_round or {}
+    shown = rounds[-tail:] if tail and tail > 0 else rounds
+
+    lines = [f"本会话 {len(rounds)} 轮（显示最近 {len(shown)} 轮）", _SEP]
+    offset = len(rounds) - len(shown)
+    for i, r in enumerate(shown, start=offset + 1):
+        lines.append(r.summary_line(el.get(r.number)))
+
+    lines.append(
+        "  /show <轮次> [--full] [--tools] · /show --tail N · /show --cost"
+    )
+    if offset:
+        lines.insert(1, f"  （更早的 {offset} 轮未显示：/show --tail {len(rounds)}）")
+    return lines
+
+
+def render_cost_summary(
+    *,
+    tokens_in: int,
+    tokens_out: int,
+    tool_calls: int,
+    elapsed_s: float | None = None,
+    redaction_on: bool = True,
+) -> list[str]:
+    """`/show --cost`：本会话成本/用量汇总（对应头部 `/cost`）。
+
+    ★ **只做累计，不做每轮**（`docs/ref_omp_secrets.md` §1.5：omp 也没做 per-turn，
+    收益低而噪音大）。
+    """
+    total = int(tokens_in or 0) + int(tokens_out or 0)
+    lines = [
+        "本会话用量",
+        _SEP,
+        f"  输入 token   {tokens_in:,}",
+        f"  输出 token   {tokens_out:,}",
+        f"  合计 token   {total:,}",
+        f"  工具调用     {tool_calls}",
+    ]
+    if elapsed_s is not None:
+        lines.append(f"  总耗时       {format_elapsed(elapsed_s)}")
+    lines.append(
+        f"  落盘脱敏     {'on（凭据已遮蔽）' if redaction_on else 'off（明文落盘！）'}"
+    )
     return lines
 
 
@@ -388,6 +605,7 @@ __all__ = [
     "MESSAGE_MAX_CHARS",
     "BackgroundTask",
     "Resolved",
+    "Round",
     "agent_line",
     "clip",
     "disp_width",
@@ -396,7 +614,11 @@ __all__ = [
     "message_lines",
     "pad",
     "render_agent_list",
+    "render_cost_summary",
+    "render_round_overview",
+    "render_session_transcript",
     "render_transcript",
     "resolve_selector",
+    "split_rounds",
     "status_label",
 ]

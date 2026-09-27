@@ -59,6 +59,7 @@ from core.permissions.rules import extract_content
 from core.permissions.upgrade import ApprovalUpgrader
 from core.task.view import DEFAULT_TAIL
 from tui import agent_view
+from tui import show_view
 from tui.completer import CommandCompleter
 from tui.hitl_dialog import show_hitl_dialog
 from tui.provider_select import select_provider
@@ -199,6 +200,12 @@ class CodeForgeApp:
 
     async def agent_tell(self, sel: str, message: str) -> str:
         return await agent_view.tell(self, sel, message)
+
+    # ── 主会话展开详情（spec_show_redact）──
+    # 实现在 tui/show_view.py（渲染在 core/task/view.py，纯函数）。
+
+    def show_lines(self, args: str) -> list[str]:
+        return show_view.render(self, args)
 
     def mode(self) -> PermissionMode:
         return self.agent.permission_mode

@@ -8,6 +8,11 @@
 
 本类同时持有会话内 `sequence` 计数,保证会话内序号单调递增。
 启动时若文件已存在则从尾部续写(sequence 从文件里已写入的最大值+1 起),不清空。
+
+**落盘脱敏**（`docs/spec_show_redact.md` §4.5）:
+  - 脱敏在 `json.dumps` **之前**、**在写 try 之外**做 —— 见 `_safe_redact` 的说明
+  - 脱敏失败**不写明文**:降级成一条只带标记的行
+  - 开关 `CODEFORGE_REDACT=0` / yaml `observability.redact_secrets`;默认开
 """
 
 from __future__ import annotations
@@ -17,10 +22,50 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Any
+
+from core.observability.redact import redact_config_lazy, redact_mapping
 
 from .events import TraceEvent
 
 AUDIT_DIRNAME = "audit"
+
+#: 脱敏自身失败时写进该字段,让"这行没脱敏成功"可被事后发现
+REDACT_ERROR_KEY = "redact_error"
+
+#: 脱敏失败降级时**允许保留**的字段（都是非内容类：标识与计量）
+_SAFE_KEYS = frozenset(
+    {"event", "session_id", "sequence", "ts", "duration_ms", "success", "blocked"}
+)
+
+
+def _safe_redact(data: dict[str, Any]) -> dict[str, Any]:
+    """对一条即将落盘的事件做脱敏；**脱敏自身失败时绝不返回明文**。
+
+    ★ 为什么必须放在写 try 之外：`record` / `write` 的写路径是
+    `except Exception: pass`（审计优先，绝不阻断主流程）。若脱敏放在里面，
+    它一旦抛异常就会被**静默吞掉，然后明文照常落盘** —— 而没人知道。
+
+    这里的契约：**要么给脱敏后的数据，要么给一个显式的失败标记**，
+    绝不"悄悄放行原文"。
+
+    返回值带 `redact_error` 时，调用方应把它写进该行以便事后发现。
+    """
+    if not redact_config_lazy():
+        return data
+    try:
+        return redact_mapping(data)
+    except Exception as e:  # noqa: BLE001 —— 脱敏失败也绝不放明文
+        # 只保留**非内容字段**（事件名/序号/时间/工具名），丢掉所有
+        # 可能含敏感内容的长字符串（result_preview / reason / …）。
+        safe = {
+            k: v
+            for k, v in data.items()
+            if k in _SAFE_KEYS and isinstance(v, (int, float, bool, type(None)))
+        }
+        safe["event"] = str(data.get("event") or "unknown")
+        safe[REDACT_ERROR_KEY] = f"redaction failed, content dropped: {type(e).__name__}"
+        return safe
 
 
 def _read_max_existing_sequence(path: Path) -> int:
@@ -83,7 +128,10 @@ class TraceWriter:
             if event.ts == 0:  # type: ignore[union-attr]
                 event.ts = int(time.time() * 1000)  # type: ignore[union-attr]
             data = event.to_dict() if isinstance(event, object) and hasattr(event, "to_dict") else event
-            line = json.dumps(data, ensure_ascii=False) + "\n"
+            # 脱敏在 json.dumps 之前（落盘边界），且**在写 try 的语义之外**
+            # —— 见 `_safe_redact` 的 docstring 为什么不能放进 try
+            safe = _safe_redact(data)
+            line = json.dumps(safe, ensure_ascii=False) + "\n"
             with self._lock:
                 self._file.write(line)
                 self._file.flush()
@@ -97,7 +145,7 @@ class TraceWriter:
         if self._closed:
             return
         try:
-            line = json.dumps(data, ensure_ascii=False) + "\n"
+            line = json.dumps(_safe_redact(data), ensure_ascii=False) + "\n"
             with self._lock:
                 self._file.write(line)
                 self._file.flush()

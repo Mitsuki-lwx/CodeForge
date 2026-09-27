@@ -15,6 +15,7 @@ from core.commands.builtin_local import (
 from core.commands.builtin_mcp import handle_mcp
 from core.commands.builtin_model import handle_model
 from core.commands.builtin_prompt import handle_do
+from core.commands.builtin_show import handle_show
 from core.commands.builtin_state import handle_constraint, handle_goal, handle_todo
 from core.commands.builtin_team import handle_team
 from core.commands.builtin_ui import (
@@ -172,6 +173,16 @@ def register_builtins(reg: Registry) -> None:
             ),
             kind=Kind.LOCAL,
             handler=handle_agents,
+        )
+    )
+    reg.register(
+        Command(
+            name="show",
+            description=(
+                "展开主会话详情（/show [轮次] [--tail N] [--full] [--tools] [--cost]）"
+            ),
+            kind=Kind.LOCAL,
+            handler=handle_show,
         )
     )
     reg.register(

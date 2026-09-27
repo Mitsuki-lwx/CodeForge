@@ -26,7 +26,18 @@ def make_help_handler(reg: Registry) -> Handler:
 
 
 async def handle_status(ui: UI, args: str = "") -> None:
-    """/status：输出 6 行 key:value（顺序固定）。"""
+    """/status：输出 7 行 key:value（顺序固定）。
+
+    ★ 第 7 行是**落盘脱敏开关**（`docs/spec_show_redact.md` §5）——
+    必须能一眼看出"现在 audit/*.jsonl 里的凭据是被遮了还是明文"。
+    """
+    try:
+        from core.observability.redact import redact_config_lazy
+
+        redact_on = "on" if redact_config_lazy() else "off (明文落盘!)"
+    except Exception:  # noqa: BLE001 —— 查不到就显示未知，不能因此不输出
+        redact_on = "unknown"
+
     lines = [
         "CodeForge Status",
         "",
@@ -36,6 +47,7 @@ async def handle_status(ui: UI, args: str = "") -> None:
         f"Memories:  {len(ui.memory_files())} files",
         f"Model:     {ui.model_name()}",
         f"Directory: {ui.cwd()}",
+        f"Redaction: {redact_on}",
     ]
     ui.println("\n".join(lines))
 

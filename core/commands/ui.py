@@ -80,6 +80,9 @@ class UI(Protocol):
     async def agent_stop(self, sel: str) -> str: ...
     async def agent_tell(self, sel: str, message: str) -> str: ...
 
+    # ── 主会话展开详情（spec_show_redact）──
+    def show_lines(self, args: str) -> list[str]: ...
+
     # ── 会话状态系统（spec_session_state）──
     def session_state(self) -> object | None: ...
 
@@ -220,6 +223,11 @@ class NopUI:
 
     async def agent_tell(self, sel: str, message: str) -> str:
         return "not implemented"
+
+    # ── 主会话展开详情 ──
+
+    def show_lines(self, args: str) -> list[str]:
+        return []
 
     # ── 会话状态系统 ──
 

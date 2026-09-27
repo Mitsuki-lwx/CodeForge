@@ -165,12 +165,13 @@ def test_register_builtins_all_registered():
         "plan",
         "resume",
         "session",
+        "show",
         "status",
         "team",
         "todo",
         "worktree",
     ]
-    assert names == expected  # 字典序（/agents 为后台任务下钻与干预新增）
+    assert names == expected  # 字典序（/show 为主会话展开详情新增）
 
 
 def test_register_builtins_no_collision():

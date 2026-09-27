@@ -20,6 +20,7 @@ from typing import Any
 from core.observability import providers
 from core.observability.config import load_observability_config
 from core.observability.exporters import JsonlSink
+from core.observability.redact import redact_text
 
 _init_lock = threading.Lock()
 _initialized = False
@@ -194,11 +195,21 @@ class _JsonlLogHandler(logging.Handler):
         self._sink = sink
 
     def emit(self, record: logging.LogRecord) -> None:
+        # 落盘前脱敏（`docs/spec_show_redact.md` §4.5）：日志消息经常把工具输出 /
+        # 请求内容整段带出来，与 audit 是同一类风险。
+        # ★ 日志 handler 绝不能抛异常（logging 会打印到 stderr 并吞掉），
+        #   所以脱敏失败时退回原文 —— 这里与 TraceWriter 的取舍**故意不同**：
+        #   TraceWriter 里丢内容是"审计完整性"问题，这里丢日志是"可用性"问题，
+        #   而日志通道本身还有 console 兜底。
+        try:
+            msg = redact_text(self.format(record))
+        except Exception:  # noqa: BLE001
+            msg = self.format(record)
         self._sink.write_line({
             "ts": int(record.created * 1000),
             "level": record.levelname,
             "logger": record.name,
-            "msg": self.format(record),
+            "msg": msg,
         })
 
 
