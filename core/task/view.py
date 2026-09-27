@@ -392,6 +392,21 @@ def _is_system_reminder(m: Any) -> bool:
     return str(getattr(m, "content", "") or "").startswith("[system_reminder]")
 
 
+def _is_user_role(m: Any) -> bool:
+    """这条消息是不是"用户说的"。
+
+    刻意**同时接受枚举与裸字符串**：`Message.role` 恒为 `MessageRole` 枚举，
+    但调用方（探针、未来的 API 入口）可能直接塞 `role="user"`。
+    旧写法 `getattr(role, "value", "") == "user"` 对裸字符串**静默返回假** ——
+    不报错、不崩，只是切不出轮（本轮计时脚本就因此把 1000 轮测成 1 轮）。
+    """
+    role = getattr(m, "role", None)
+    if role is None:
+        return False
+    value = getattr(role, "value", role)  # 枚举取 .value，裸字符串原样
+    return str(value) == "user"
+
+
 def split_rounds(messages: Iterable[Any]) -> list[Round]:
     """把主会话的扁平消息列表切成"轮"。
 
@@ -415,7 +430,7 @@ def split_rounds(messages: Iterable[Any]) -> list[Round]:
         starts_round = (
             not getattr(m, "tool_use_id", None)
             and not _is_system_reminder(m)
-            and str(getattr(getattr(m, "role", None), "value", "")) == "user"
+            and _is_user_role(m)
             and str(getattr(m, "content", "") or "").strip()
         )
         if starts_round:

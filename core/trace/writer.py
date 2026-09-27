@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -27,6 +28,8 @@ from typing import Any
 from core.observability.redact import redact_config_lazy, redact_mapping
 
 from .events import TraceEvent
+
+logger = logging.getLogger(__name__)
 
 AUDIT_DIRNAME = "audit"
 
@@ -103,6 +106,9 @@ class TraceWriter:
         self._lock = threading.Lock()
         self._seq = _read_max_existing_sequence(self._path)
         self._closed = False
+        #: 关闭后仍被提交的事件数。静默丢弃会让"注进去的东西没生效"无从查证
+        #: （本轮真链路探针因此连续假红 6 轮），故可计数、可断言。
+        self.dropped_after_close = 0
 
     @property
     def path(self) -> Path:
@@ -112,12 +118,25 @@ class TraceWriter:
     def session_id(self) -> str:
         return self._session_id
 
+    def _note_dropped(self, kind: str) -> None:
+        """记录一次"关闭后写入"。刻意只 debug 不抛异常。
+
+        `agent.run()` 的 finally 已经 `_trace_close()`，收尾期晚到的写入是**正常情况**,
+        抛异常会把整个会话炸掉；但静默丢弃会让"注进去的东西没生效"查无实据
+        （本轮真链路探针为此连续假红 6 轮），故降级为可查的 debug + 计数。
+        """
+        self.dropped_after_close += 1
+        logger.debug(
+            "trace writer 已关闭，丢弃一条 %s（累计 %d 条）", kind, self.dropped_after_close
+        )
+
     def record(self, event: TraceEvent | dict) -> None:
         """同步追加一条事件。分配 session_id + sequence;失败只记日志不抛出。
 
         返回空——调用方不依赖写结果;trace 失败绝不阻断主流程(见 spec 解耦要求)。
         """
         if self._closed:
+            self._note_dropped("record")
             return
         try:
             if not event.session_id:  # type: ignore[union-attr]
@@ -143,6 +162,7 @@ class TraceWriter:
     def write(self, data: dict) -> None:
         """追加一条已构造好的 dict 行(兼容 dict 输入、无 session/sequence 注入)。"""
         if self._closed:
+            self._note_dropped("write")
             return
         try:
             line = json.dumps(_safe_redact(data), ensure_ascii=False) + "\n"
