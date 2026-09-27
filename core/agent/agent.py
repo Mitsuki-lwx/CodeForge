@@ -260,18 +260,30 @@ class Agent:
                 pass
 
     def _trace_write_dict(self, data: dict) -> None:
-        """发一条**已构造好的 dict** 行（无 session/sequence 注入）。
+        """发一条**已构造好的 dict** 行，自行补齐 session_id / ts / sequence。
 
         ★ 不要用 `_trace_record` 传裸 dict：`TraceWriter.record` 开头会访问
         `event.session_id`，裸 dict 没这个属性 ⇒ `AttributeError`
         ⇒ 被写路径的 `except: pass` **静默吞掉**，事件一行都不落。
         （实测踩过：文件存在但零行，看不出任何错误。）
         dict 入口是 `TraceWriter.write`。
+
+        ★ `write()` 契约上**不注入** session/ts/sequence（见 writer.py docstring），
+        所以这里必须自己补：`TraceWriter.record` 才做那套注入，走 dict 就绕过了。
+        少 `ts` 尤其致命 —— 事后按时间聚合（"误判集中在哪几天/哪类表述"）
+        就无从下手，埋点等于白埋。
+        不设 `sequence`：不碰 writer 的私有 `_seq`；文件是 append-only，
+        同一文件内的**行序**即稳定写入序，够排序用。
         """
         writer = self._get_trace_writer()
         if writer is not None:
+            payload = {
+                "session_id": self._exec_ctx.session_id,
+                "ts": int(time.time() * 1000),
+                **data,
+            }
             try:
-                writer.write(data)
+                writer.write(payload)
             except Exception:  # noqa: BLE001 —— 审计失败绝不抛出
                 pass
 

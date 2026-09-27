@@ -173,3 +173,105 @@ class TestPureFunction:
         copy = str(t)
         detect_plan_intent(t)
         assert t == copy
+
+
+class TestTelemetryPayload:
+    """埋点行的字段完整性（对应 `.workbuddy-ai/verify_plan_telemetry.py`）。
+
+    ★ 为什么单独立类：真实链路探针首次跑出 9/10，缺的就是 `session_id`。
+    根因是 `TraceWriter.write()` **契约上不注入** session/ts/sequence
+    （只有 `record()` 注入那三个），走 dict 入口就绕过了整套注入。
+    实测全库 12165 行 audit 里，只有埋点这几行是光秃秃的
+    `event/input_len/input_sha`，其余行都带 `session_id/ts/sequence`。
+    少 `ts` 尤其致命：「几周后量化误判率」全靠时间聚合，缺了就等于白埋。
+    """
+
+    @staticmethod
+    def _payload() -> dict:
+        """用真 TraceWriter 落一行，返回落盘后的行（走真脱敏路径）。"""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from core.trace.writer import TraceWriter
+
+        with tempfile.TemporaryDirectory() as td:
+            w = TraceWriter("sess-telemetry-test", audit_dir=td)
+            w.write(
+                {
+                    "session_id": "sess-telemetry-test",
+                    "ts": 1_700_000_000_000,
+                    "event": "plan_intent_auto",
+                    "input_len": 7,
+                    "input_sha": "abcdef123456",
+                }
+            )
+            w.close()
+            line = (Path(td) / "audit" / "sess-telemetry-test.jsonl").read_text(
+                encoding="utf-8"
+            )
+            return json.loads(line.strip())
+
+    def test_row_carries_session_id(self) -> None:
+        assert self._payload().get("session_id") == "sess-telemetry-test"
+
+    def test_row_carries_ts(self) -> None:
+        assert self._payload().get("ts") == 1_700_000_000_000
+
+    def test_row_survives_redaction_path(self) -> None:
+        """脱敏不得把埋点的标识字段吃掉（否则字段齐全也读不出来）。"""
+        row = self._payload()
+        for key in ("event", "session_id", "ts", "input_len", "input_sha"):
+            assert key in row, f"脱敏把 {key} 吃了"
+
+    def test_agent_actually_writes_those_fields(self) -> None:
+        """★ 回归锁：`Agent._trace_write_dict` 必须自带 session_id / ts。
+
+        这条锁的是**实现**（不是 payload 形状）——字段是在
+        `_trace_write_dict` 里补的，若有人删掉那两行，payload 测试仍会全绿。
+
+        ★★ 刻意用 **AST** 而不是 `assert "session_id" in src`：
+        变异 M3（只删 session_id 那行）下，字符串匹配**仍是绿的** ——
+        因为 docstring 与注释里也出现了 `session_id`（`event.session_id`、
+        「自行补齐 session_id / ts / sequence」）。字符串匹配被注释喂饱了。
+        AST 只看真正执行的代码，注释/文档字符串进不了判定。
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from core.agent.agent import Agent
+
+        src = textwrap.dedent(inspect.getsource(Agent._trace_write_dict))
+        tree = ast.parse(src)
+
+        # 收集**执行代码**里的字符串常量（跳过 docstring）与属性/键名
+        str_lits: set[str] = set()
+        exec_nodes: list[ast.AST] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                str_lits.add(node.value)
+            if isinstance(node, ast.Attribute):
+                exec_nodes.append(node)
+
+        attrs = {
+            n.attr for n in exec_nodes if isinstance(getattr(n, "ctx", None), ast.Load)
+        }
+        assert "session_id" in attrs, (
+            "_trace_write_dict 不再读 self._exec_ctx.session_id"
+        )
+        assert "time" in attrs, "_trace_write_dict 不再取 time.time()"
+        # payload 字典的两个键必须是**字面字符串键**，不是变量
+        assert "session_id" in str_lits and "ts" in str_lits, (
+            f"payload 的 session_id/ts 键不在字面量里：{sorted(str_lits)}"
+        )
+
+    def test_same_input_yields_same_hash(self) -> None:
+        """B 的分析前提：同表述重复出现时能靠哈希聚到一起。"""
+        import hashlib
+
+        t = "先计划一下再动手"
+        h1 = hashlib.sha256(t.encode("utf-8")).hexdigest()[:12]
+        h2 = hashlib.sha256(t.encode("utf-8")).hexdigest()[:12]
+        assert h1 == h2
+        assert len(h1) == 12
