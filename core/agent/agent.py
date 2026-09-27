@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -258,6 +259,22 @@ class Agent:
             except Exception:  # noqa: BLE001 —— 审计失败绝不抛出
                 pass
 
+    def _trace_write_dict(self, data: dict) -> None:
+        """发一条**已构造好的 dict** 行（无 session/sequence 注入）。
+
+        ★ 不要用 `_trace_record` 传裸 dict：`TraceWriter.record` 开头会访问
+        `event.session_id`，裸 dict 没这个属性 ⇒ `AttributeError`
+        ⇒ 被写路径的 `except: pass` **静默吞掉**，事件一行都不落。
+        （实测踩过：文件存在但零行，看不出任何错误。）
+        dict 入口是 `TraceWriter.write`。
+        """
+        writer = self._get_trace_writer()
+        if writer is not None:
+            try:
+                writer.write(data)
+            except Exception:  # noqa: BLE001 —— 审计失败绝不抛出
+                pass
+
     def _trace_close(self) -> None:
         """关闭审计写入器(幂等);未创建过 writer 或已关闭都静默。"""
         if self._trace_writer is not None:
@@ -488,6 +505,22 @@ class Agent:
             if self._plan_path is None:
                 self._plan_path = generate_plan_path(str(self._exec_ctx.cwd))
                 self._permission_checker.plan_file_path = str(self._plan_path)
+            # 埋点：记长度 + 哈希，**不落原文**。
+            # 目的 —— 让 `detect_plan_intent` 的真实误判率在几周后可量化：
+            # 有了"同一输入重复出现几次""长度分布"就能反推哪些表述在误触发。
+            # ★ 刻意不记原文：那等于重演"为量化而落 prompt 原文"，
+            #   与 `spec_trace.md` 的既有决策冲突；哈希已足够回答上述问题。
+            # 刻意不进 metrics：record_metric 无标签维度，哈希做指标名会造成
+            #   高基数（09-26 调研结论「高基数只进 traces/events，不进 metrics」）。
+            self._trace_write_dict(
+                {
+                    "event": "plan_intent_auto",
+                    "input_len": len(user_input),
+                    "input_sha": hashlib.sha256(
+                        user_input.encode("utf-8")
+                    ).hexdigest()[:12],
+                }
+            )
 
         self._cancel.clear()
         start_time = time.monotonic()
