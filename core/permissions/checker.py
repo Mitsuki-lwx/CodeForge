@@ -13,17 +13,29 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 
 from core.permissions.dangerous import DangerousCommandDetector
-from core.permissions.modes import DecisionEffect, PermissionMode, ToolCategory, is_plan_mode_allowed, mode_decide
-from core.permissions.rules import RuleEngine, extract_content, is_safe_command
+from core.permissions.modes import (
+    DecisionEffect,
+    PermissionMode,
+    ToolCategory,
+    mode_decide,
+)
+from core.permissions.rules import (
+    RuleEngine,
+    extract_content,
+    extract_paths,
+    is_safe_command,
+)
 from core.permissions.sandbox import PathSandbox
 
 
 @dataclass
 class Decision:
     """权限检查结果。"""
+
     effect: DecisionEffect
     reason: str
 
@@ -83,8 +95,27 @@ class PermissionChecker:
                 if self._is_plan_file(content):
                     return Decision(effect="allow", reason="Plan mode: plan file write")
 
+        # Layer 2（读）：只读工具也要过路径沙箱。
+        # 旧实现把 read-only 的自动放行（下方 Layer 1）放在沙箱之前，于是
+        # `read_file C:/Users/x/.ssh/id_rsa` 直接 allow —— 读密钥零审批，
+        # 且内容会进 LLM 上下文发往第三方 API。越界读判 `ask`（不是 deny）：
+        # 交互式用户可批准，无人值守由策略代答，两边都不丢能力。
+        #
+        # 这里**只标记不立即返回**：让 Layer 3 的显式规则（用户在
+        # `.codeforge/settings.json` 里写的 allow）有机会覆盖沙箱 ——
+        # 沙箱是默认护栏，不是不可协商的墙。真正的 `ask` 落在 Layer 4c。
+        read_outside = False
+        read_outside_reason = ""
+        if tool_category == "read" and self.mode != PermissionMode.BYPASS:
+            for target in extract_paths(args):
+                sandbox_result = self._sandbox.check(target)
+                if not sandbox_result.ok:
+                    read_outside = True
+                    read_outside_reason = sandbox_result.reason
+                    break
+
         # Layer 1: 安全只读命令自动放行
-        if tool_category == "read" and tool_is_read_only:
+        if tool_category == "read" and tool_is_read_only and not read_outside:
             return Decision(effect="allow", reason="Read-only tool")
 
         # Layer 1: 命令类工具 → 安全命令检查
@@ -96,16 +127,22 @@ class PermissionChecker:
         if is_command and content:
             hit = self._detector.detect(content)
             if hit.is_dangerous:
-                return Decision(effect="deny", reason=f"Dangerous command: {hit.reason}")
+                return Decision(
+                    effect="deny", reason=f"Dangerous command: {hit.reason}"
+                )
 
-        # Layer 2: 路径沙箱（文件读写类工具）
-        if tool_category in ("read", "write") and content:
-            sandbox_result = self._sandbox.check(content)
-            if not sandbox_result.ok:
-                if self.mode == PermissionMode.BYPASS:
-                    pass  # bypass 绕过沙箱
-                else:
-                    return Decision(effect="deny", reason=f"Path sandbox: {sandbox_result.reason}")
+        # Layer 2（写）：路径沙箱
+        if tool_category == "write":
+            for target in extract_paths(args):
+                sandbox_result = self._sandbox.check(target)
+                if not sandbox_result.ok:
+                    if self.mode == PermissionMode.BYPASS:
+                        pass  # bypass 绕过沙箱
+                    else:
+                        return Decision(
+                            effect="deny",
+                            reason=f"Path sandbox: {sandbox_result.reason}",
+                        )
 
         # Layer 3: 规则引擎匹配
         rule_result = self._rule_engine.evaluate(tool_name, content)
@@ -119,6 +156,15 @@ class PermissionChecker:
         # Layer 4b: 会话级放行缓存（HITL "本会话允许"）
         if self._check_session_allowed(tool_name, content):
             return Decision(effect="allow", reason="Session allow cache")
+
+        # Layer 4c: 越界读（Layer 2 标记下来的）。
+        # 必须排在 Layer 4 之前 —— 矩阵里 read 档位是 allow，否则越界读会被
+        # "Mode default: allow" 直接放行，沙箱形同虚设。
+        if read_outside:
+            return Decision(
+                effect="ask",
+                reason=f"Path sandbox: {read_outside_reason}",
+            )
 
         # Layer 4: 模式兜底
         effect = mode_decide(self.mode, tool_category)
@@ -134,6 +180,22 @@ class PermissionChecker:
         """HITL 选择「本会话允许」后记录。"""
         key = f"{tool_name}:{content}"
         self._session_allowed.add(key)
+
+    def load_rules(self, cwd: str | Path) -> None:
+        """加载项目级 + 用户级规则（会话装配时调用一次）。
+
+        不调用的话 Layer 3 永远匹配空规则集 —— 用户在
+        `.codeforge/settings.json` 里写的 deny 规则会静默失效。
+        """
+        self._rule_engine.load_rules(cwd)
+
+    def add_project_rule(
+        self, cwd: str | Path, tool_name: str, content: str, action: DecisionEffect
+    ) -> bool:
+        """HITL 选择「允许并保存」后落盘到项目规则。"""
+        if action not in ("allow", "deny", "ask"):
+            return False
+        return self._rule_engine.save_project_rule(cwd, tool_name, content, action)
 
     # ── Helpers ──────────────────────────────────────────────────────
 

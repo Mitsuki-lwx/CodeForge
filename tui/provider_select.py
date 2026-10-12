@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from typing import List
 
 from rich.console import Console
 
@@ -11,7 +10,7 @@ from config.model import ProviderConfig
 from tui.select import HIDE_CURSOR, SHOW_CURSOR, get_key
 
 
-def select_provider(providers: List[ProviderConfig]) -> ProviderConfig:
+def select_provider(providers: list[ProviderConfig]) -> ProviderConfig:
     """方向键选择 provider。"""
     console = Console()
     n = len(providers)
@@ -50,7 +49,9 @@ def select_provider(providers: List[ProviderConfig]) -> ProviderConfig:
     sys.stdout.write("\033[J")
     sys.stdout.flush()
     selected_provider = providers[selected]
-    console.print(f"\n  [green]=>[/] {selected_provider.name} ({selected_provider.model})")
+    console.print(
+        f"\n  [green]=>[/] {selected_provider.name} ({selected_provider.model})"
+    )
     return selected_provider
 
 
@@ -68,7 +69,9 @@ def _render(console: Console, providers: list, selected: int, n: int) -> None:
         thinking_flag = " [thinking]" if p.thinking else ""
         arrow = "[cyan]>[/]" if i == selected else " "
         style = "bold cyan" if i == selected else "dim"
-        console.print(f"  {arrow} [{style}]{p.name}[/]  [dim]({p.model}, via {via}{thinking_flag})[/]")
+        console.print(
+            f"  {arrow} [{style}]{p.name}[/]  [dim]({p.model}, via {via}{thinking_flag})[/]"
+        )
 
     console.print("-" * 50)
     console.print("[dim]Press up/down to navigate, Enter to confirm[/]")

@@ -18,6 +18,12 @@ class ProviderConfig:
     # 让角色 / Skill 用语义档位（haiku/sonnet/opus）声明而不绑定厂商；
     # 别名表按 provider 独立，未配的保留别名会退回主模型并告警。
     model_aliases: dict[str, str] = field(default_factory=dict)
+    # 该模型是否支持**图像输入**（多模态）。默认 False —— 保守。
+    #
+    # 为什么要显式开关：浏览器工具（`browser_screenshot`）会把截图作为图像块
+    # 回灌给模型，而多数文本模型（如 DeepSeek 系）收到图像块会直接 400。
+    # 关着的时候截图仍然落盘、路径照常回报，只是不进上下文 —— 给人看。
+    vision: bool = False
 
 
 @dataclass
@@ -75,6 +81,23 @@ class ApprovalReviewConfig:
 
 
 @dataclass
+class McpConfig:
+    """MCP 外部工具（`features.mcp`）。
+
+    `trust_project` 是**安全开关**，默认 `False`：工作区里的 `.codeforge/mcp.json`
+    是**仓库带进来的文件**，而 MCP 的 stdio server 就是"启动一个子进程"。
+    默认加载它 = `git clone 任意仓库 && codeforge` 立刻执行仓库指定的命令，
+    还能读到完整环境变量（含各家 API key）—— 这条路径**不需要 agent 参与**，
+    也没有任何审批环节可绕过。
+
+    所以默认只加载**用户级** `~/.codeforge/mcp.json`（你自己写的 = 你自己的授权）；
+    要用项目自带的，显式打开这个开关（或设 `CODEFORGE_TRUST_PROJECT_MCP=1`）。
+    """
+
+    trust_project: bool = False
+
+
+@dataclass
 class FeaturesConfig:
     """功能开关（团队系统等）。"""
 
@@ -84,3 +107,4 @@ class FeaturesConfig:
     loop: str = ""  # Agent 循环策略（spec_loop）：react 或自定义模块路径
     host: HostConfig | None = None  # 会话宿主（features.host）
     approval_review: ApprovalReviewConfig | None = None  # 审批审查后端
+    mcp: McpConfig | None = None  # MCP 外部工具（features.mcp）

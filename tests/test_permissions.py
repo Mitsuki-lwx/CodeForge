@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.agent.agent import normalize_tool_category
+from core.agent.tool_category import normalize_tool_category
 from core.permissions.checker import PermissionChecker
 from core.permissions.modes import PermissionMode
 from core.tool.tools import get_default_registry
@@ -428,3 +428,166 @@ def test_child_policy_falls_back_to_deny_all_on_unknown_parent():
         pass
 
     assert resolve_child_policy(_Parent()).value == "deny_all"
+
+
+# ── 只读工具的路径沙箱（曾经完全不受约束）────────────────────────────
+#
+# 回归背景：Layer 1 的「只读工具直接 allow」排在 Layer 2 沙箱**之前**，于是
+# `read_file C:/Users/x/.ssh/id_rsa` 零审批放行，且内容会进 LLM 上下文发往
+# 第三方 API —— 读密钥与写文件被非对称对待。现在只读也过沙箱，越界判 `ask`。
+
+
+def _checker_at(work_dir):
+    from core.permissions.sandbox import PathSandbox
+
+    return PermissionChecker(
+        mode=PermissionMode.DEFAULT, sandbox=PathSandbox(work_dir=str(work_dir))
+    )
+
+
+def test_read_outside_workspace_asks(tmp_path):
+    checker = _checker_at(tmp_path)
+    d = checker.check("read_file", True, "read", {"file_path": "/etc/passwd"})
+    assert d.effect == "ask", d
+    assert "Path sandbox" in d.reason
+
+
+def test_read_inside_workspace_allowed(tmp_path):
+    checker = _checker_at(tmp_path)
+    assert (
+        checker.check("read_file", True, "read", {"file_path": "a.txt"}).effect
+        == "allow"
+    )
+
+
+def test_read_outside_workspace_allowed_under_bypass(tmp_path):
+    """bypassPermissions 仍绕过沙箱（既有语义，未改动）。"""
+    from core.permissions.sandbox import PathSandbox
+
+    checker = PermissionChecker(
+        mode=PermissionMode.BYPASS, sandbox=PathSandbox(work_dir=str(tmp_path))
+    )
+    assert (
+        checker.check("read_file", True, "read", {"file_path": "/etc/passwd"}).effect
+        == "allow"
+    )
+
+
+def test_write_outside_workspace_denied(tmp_path):
+    """写越界仍是硬 deny（与改动前一致）。"""
+    checker = _checker_at(tmp_path)
+    d = checker.check("write_file", False, "write", {"file_path": "/etc/hosts"})
+    assert d.effect == "deny"
+
+
+def test_glob_pattern_is_not_treated_as_path(tmp_path):
+    """`Glob`/`Grep` 的 pattern 不是路径 —— 没有 `path` 时不该被沙箱误伤。"""
+    checker = _checker_at(tmp_path)
+    d = checker.check("grep", True, "read", {"pattern": "def foo", "path": "."})
+    assert d.effect == "allow", d
+    d2 = checker.check("glob", True, "read", {"pattern": "**/*.py"})
+    assert d2.effect == "allow", d2
+
+
+# ── 规则引擎接线（曾经定义了却无人调用）───────────────────────────────
+
+
+def test_project_rule_deny_takes_effect(tmp_path):
+    """项目级 `.codeforge/settings.json` 的 deny 规则必须真的生效。
+
+    回归背景：`load_project_rules` / `load_user_rules` 定义了但**零调用者**，
+    于是 Layer 3 永远匹配空规则集 —— 用户写的 deny 规则静默失效。
+    """
+    settings = tmp_path / ".codeforge" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        '{"permissions": {"rules": ['
+        '{"tool": "bash", "pattern": "deploy.sh", "action": "deny"}]}}',
+        encoding="utf-8",
+    )
+    checker = _checker_at(tmp_path)
+    checker.load_rules(tmp_path)
+    d = checker.check("bash", False, "command", {"command": "./deploy.sh prod"})
+    assert d.effect == "deny", d
+
+
+def test_allow_save_persists_project_rule(tmp_path):
+    """HITL「允许并保存」落盘后，重新加载仍生效（旧实现只进内存）。"""
+    checker = _checker_at(tmp_path)
+    ok = checker.add_project_rule(tmp_path, "bash", "make test", "allow")
+    assert ok is True
+
+    fresh = _checker_at(tmp_path)
+    fresh.load_rules(tmp_path)
+    d = fresh.check("bash", False, "command", {"command": "make test"})
+    assert d.effect == "allow", d
+    assert d.reason == "Rule: allow"
+
+
+def test_agent_loads_project_rules_at_construction(tmp_path):
+    """装配一个 Agent 就该带上项目规则，不需要额外调用。"""
+    settings = tmp_path / ".codeforge" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        '{"permissions": {"rules": ['
+        '{"tool": "bash", "pattern": "danger-zone", "action": "deny"}]}}',
+        encoding="utf-8",
+    )
+    agent = _policy_agent_at(tmp_path)
+    assert _policy_effect(agent, "bash", command="run danger-zone now") == "deny"
+
+
+def _policy_agent_at(work_dir):
+    from pathlib import Path as _Path
+
+    from conversation.manager import ConversationManager
+    from core.agent.agent import Agent
+    from core.agent.config import AgentConfig
+    from core.tool.context import ExecutionContext
+
+    class _Cfg:
+        model = "x"
+        context_window = 200000
+
+    class _Client:
+        config = _Cfg()
+
+    return Agent(
+        registry=get_default_registry(),
+        llm_client=_Client(),
+        exec_ctx=ExecutionContext(cwd=_Path(work_dir), session_id="main"),
+        conversation=ConversationManager(),
+        config=AgentConfig(max_iterations=3),
+    )
+
+
+def test_project_rule_can_allow_out_of_workspace_read(tmp_path):
+    """显式 allow 规则可以覆盖"越界读"沙箱 —— 沙箱是默认护栏，不是不可协商的墙。"""
+    import json
+
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("hello", encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    settings = workspace / ".codeforge" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "permissions": {
+                    "rules": [
+                        {
+                            "tool": "read_file",
+                            "pattern": outside.name,
+                            "action": "allow",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    checker = _checker_at(workspace)
+    checker.load_rules(workspace)
+    d = checker.check("read_file", True, "read", {"file_path": str(outside)})
+    assert d.effect == "allow", d

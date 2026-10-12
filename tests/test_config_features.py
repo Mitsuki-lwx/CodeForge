@@ -100,9 +100,7 @@ def test_host_absent_means_none(tmp_path):
 
 def test_host_parsed_with_defaults(tmp_path):
     """只写 enabled 时，其余字段走安全默认。"""
-    _, features = load_config_full(
-        _cfg_with_host(tmp_path, "    enabled: true\n")
-    )
+    _, features = load_config_full(_cfg_with_host(tmp_path, "    enabled: true\n"))
     assert features.host is not None
     assert features.host.enabled is True
     assert features.host.port == 0

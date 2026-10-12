@@ -61,13 +61,15 @@ def _safe_redact(data: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001 —— 脱敏失败也绝不放明文
         # 只保留**非内容字段**（事件名/序号/时间/工具名），丢掉所有
         # 可能含敏感内容的长字符串（result_preview / reason / …）。
-        safe = {
+        safe: dict[str, Any] = {
             k: v
             for k, v in data.items()
             if k in _SAFE_KEYS and isinstance(v, (int, float, bool, type(None)))
         }
         safe["event"] = str(data.get("event") or "unknown")
-        safe[REDACT_ERROR_KEY] = f"redaction failed, content dropped: {type(e).__name__}"
+        safe[REDACT_ERROR_KEY] = (
+            f"redaction failed, content dropped: {type(e).__name__}"
+        )
         return safe
 
 
@@ -127,7 +129,9 @@ class TraceWriter:
         """
         self.dropped_after_close += 1
         logger.debug(
-            "trace writer 已关闭，丢弃一条 %s（累计 %d 条）", kind, self.dropped_after_close
+            "trace writer 已关闭，丢弃一条 %s（累计 %d 条）",
+            kind,
+            self.dropped_after_close,
         )
 
     def record(self, event: TraceEvent | dict) -> None:
@@ -146,7 +150,11 @@ class TraceWriter:
                 event.sequence = self._seq  # type: ignore[union-attr]
             if event.ts == 0:  # type: ignore[union-attr]
                 event.ts = int(time.time() * 1000)  # type: ignore[union-attr]
-            data = event.to_dict() if isinstance(event, object) and hasattr(event, "to_dict") else event
+            data = (
+                event.to_dict()
+                if isinstance(event, object) and hasattr(event, "to_dict")
+                else event
+            )
             # 脱敏在 json.dumps 之前（落盘边界），且**在写 try 的语义之外**
             # —— 见 `_safe_redact` 的 docstring 为什么不能放进 try
             safe = _safe_redact(data)

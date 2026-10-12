@@ -193,7 +193,9 @@ async def test_continue_on_non_live_run_warns_and_leaves_session_untouched(
     )
     client = _FakeClient(run_id="run-live")
 
-    rc = await _continue_run(client, record, argparse.Namespace(prompt="继续"), tmp_path)
+    rc = await _continue_run(
+        client, record, argparse.Namespace(prompt="继续"), tmp_path
+    )
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -243,7 +245,9 @@ async def test_continue_returns_nonzero_on_agent_error(tmp_path, capsys):
         events=[{"event": "AgentError", "data": {"message": "上游 502"}}],
     )
 
-    rc = await _continue_run(client, record, argparse.Namespace(prompt="继续"), tmp_path)
+    rc = await _continue_run(
+        client, record, argparse.Namespace(prompt="继续"), tmp_path
+    )
 
     assert rc == 1
     assert "上游 502" in capsys.readouterr().out

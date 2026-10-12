@@ -82,3 +82,73 @@ class TestGitSubcommandGuard:
         """
         assert is_safe_command("git grep foo") is False
         assert is_safe_command("git unknown-thing --x") is False
+
+    def test_git_config_not_safe(self):
+        """`git config` 会写用户级配置（持久化后门），不再是"安全只读"。"""
+        assert is_safe_command("git config --global alias.z '!rm -rf /'") is False
+        assert is_safe_command("git config --get user.name") is False
+
+
+class TestSafePrefixCannotMaskDanger:
+    """安全前缀 + 分隔符/写原语/越界路径 —— 逐个钉住已修的真实漏洞。
+
+    这些用例在修复前**全部返回 True**（被判"安全只读"直接放行、连审批都不进）。
+    """
+
+    def test_newline_separator_not_safe(self):
+        """换行是命令分隔符：`ls\\nrm -rf ~` 的第二行曾完全不被检查。"""
+        assert is_safe_command("ls\nrm -rf ~/important") is False
+        assert is_safe_command("ls\r\nrm -rf /tmp/x") is False
+
+    def test_ampersand_separator_not_safe(self):
+        """单个 `&` 也是分隔符（旧实现只拒 `&&`）。"""
+        assert is_safe_command("ls & rm -rf /tmp/x") is False
+        # `2>&1` 是 fd 重定向、不是分隔符 → 不误伤
+        assert is_safe_command("ls 2>&1") is True
+        assert is_safe_command("ls 2>&1 | grep x") is True
+
+    def test_write_primitives_not_safe(self):
+        """`tee` 曾是白名单成员 → 任意路径写入免审批。"""
+        assert is_safe_command("echo pwned | tee ~/.bashrc") is False
+        assert is_safe_command("tee /etc/hosts") is False
+
+    def test_env_dump_not_safe(self):
+        """`env` / `printenv` 会把全部环境变量（含 key）倒进上下文。"""
+        assert is_safe_command("env") is False
+        assert is_safe_command("printenv") is False
+        assert is_safe_command("env rm -rf /tmp/x") is False
+
+    def test_output_redirect_not_safe(self):
+        """输出重定向是写入，旧实现把重定向段整个丢掉、只校验命令体。"""
+        assert is_safe_command("echo x > ~/.bashrc") is False
+        assert is_safe_command("echo x >> /tmp/out.txt") is False
+        # 丢弃到 /dev/null 无害 → 仍算安全
+        assert is_safe_command("ls > /dev/null") is True
+        assert is_safe_command("ls 2>/dev/null") is True
+
+    def test_escaping_paths_not_safe(self):
+        """绝对路径 / `~` / `..` 参数 → 不判安全（交给权限层去问）。"""
+        assert is_safe_command("cat ~/.ssh/id_rsa") is False
+        assert is_safe_command("cat /etc/passwd") is False
+        assert is_safe_command("find / -name id_rsa") is False
+        assert is_safe_command("grep -r secret /etc") is False
+        assert is_safe_command("cat ../../outside.txt") is False
+        # 工作区内的相对路径照旧放行（零回归）
+        assert is_safe_command("cat notes/e2e.txt") is True
+        assert is_safe_command("ls -la src") is True
+
+    def test_find_write_flags_not_safe(self):
+        """`find` 的写/执行选项把它变成删除/执行原语。"""
+        assert is_safe_command("find . -name '*.py' -delete") is False
+        assert is_safe_command("find . -name '*.py' -exec rm {} +") is False
+        assert is_safe_command("find . -name '*.py'") is True
+
+    def test_sort_output_flag_not_safe(self):
+        assert is_safe_command("sort -o out.txt in.txt") is False
+        assert is_safe_command("sort in.txt") is True
+
+    def test_multiline_command_content_is_not_truncated(self):
+        """`extract_content` 不再只取第一行 —— 权限判定/黑名单看得到全量。"""
+        from core.permissions.rules import extract_content
+
+        assert extract_content("bash", {"command": "ls\nrm -rf ~"}) == "ls\nrm -rf ~"

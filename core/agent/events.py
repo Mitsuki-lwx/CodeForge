@@ -66,6 +66,7 @@ class IterationUpdate:
 
 class CompactPhase(Enum):
     """压缩生命周期阶段。"""
+
     BEFORE_AUTO = "before_auto"
     AFTER_AUTO = "after_auto"
     BEFORE_EMERGENCY = "before_emergency"
@@ -79,6 +80,7 @@ class CompactEvent:
     Agent 主循环在自动/紧急压缩前后 emit 此事件，
     供 TUI 渲染"正在压缩..."等状态提示。
     """
+
     phase: CompactPhase
     before: int = 0
     after: int = 0

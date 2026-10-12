@@ -13,6 +13,7 @@ import pytest
 from core.observability import sdk
 from core.observability.providers import record_histogram, record_metric, snapshot
 
+
 @pytest.fixture
 def obs_dir() -> Path:
     import tempfile
@@ -110,8 +111,11 @@ def test_agent_run_emits_trace_and_span(isolate_obs, obs_dir: Path):
     exec_ctx = ExecutionContext(cwd=Path("/tmp"), session_id="t-obs")
     conv = ConversationManager(system_prompt="test")
     agent = Agent(
-        registry=reg, llm_client=client, exec_ctx=exec_ctx,
-        conversation=conv, config=cfg,
+        registry=reg,
+        llm_client=client,
+        exec_ctx=exec_ctx,
+        conversation=conv,
+        config=cfg,
         trace_audit_dir=str(obs_dir / "audit_root"),
     )
 

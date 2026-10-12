@@ -1,3 +1,9 @@
+[build-system]
+# 平铺布局（core/ llm/ tui/ ... 直接位于仓库根）必须显式声明构建后端与包发现规则，
+# 否则 setuptools 自动发现会因"多个顶层包"直接报错，`pip install .` 装不上。
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "codeforge"
 version = "0.1.0"
@@ -18,11 +24,100 @@ dependencies = [
 [project.optional-dependencies]
 # 额外的 observability 导出器（当前核心已含 OTLP HTTP；这里留给未来更多 exporter）
 observability-exporters = []
+# 浏览器验证（`browser_snapshot` / `browser_eval` / `browser_screenshot`）。
+# 刻意**不**进必装依赖：要下 ~150MB 的 Chromium，只有需要验证 UI 的人该付这个代价。
+#   pip install "codeforge[browser]" && playwright install chromium
+browser = [
+    "playwright>=1.40",
+]
+# 开发/CI 依赖：`pip install -e ".[dev]"` 后可直接 `python -m pytest`。
+# 不用 `pytest-asyncio<1`：本套件是按 1.x 的 auto 模式验证过的。
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=1.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
 
 [project.scripts]
 codeforge = "main:main"
 codeforge-bench = "benchmark.run:main"
 
+[tool.setuptools]
+# `main.py` 是仓库根的顶层模块（入口点 `main:main` 依赖它可导入）
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+# 只收产品包；`tests/` 与 `scripts/`（无 __init__.py）不入安装产物
+include = ["core*", "llm*", "tui*", "config*", "conversation*", "benchmark*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+# 88 = ruff format / black 的默认值。实测本仓库按 88 写的最多（148 个文件需要重排，
+# 而 100 列要动 191 个）—— 所以选默认值，不另立标准。
+line-length = 88
+# 本地会话数据 / 备份副本 / 文档与产物：不是产品代码，扫它们只会产生噪音
+extend-exclude = [".workbuddy", ".workbuddy-ai", "docs", "outputs", "build", "dist"]
+
+[tool.ruff.lint]
+# 只开**能抓到真 bug** 的规则集：
+#   E4/E7/E9  语法级错误（重复导入、语句位置等）
+#   F         pyflakes：未定义名、未使用导入/变量、重复定义
+#   B         bugbear：常见的逻辑陷阱
+#   I         导入排序
+#   UP        pyupgrade：老写法（在 3.11 上等价的新写法）
+#
+# 刻意**不开**的：
+#   E501 行长 —— 这个库的注释/文档行本来就宽，为凑 88 列折断反而更难读。
+#   要统一格式应该上 `ruff format`（独立一件事），不是拿 E501 当门禁。
+#   ARG 未使用参数 —— 大量命中协议/接口实现（`execute(self, context, input)`），
+#   是误报而非问题。
+#   SIM105 `try/except/pass` —— 本库的观测/审计路径刻意用 `except: pass`
+#   + `# noqa: BLE001` 表达"绝不改变主流程语义"，换成 contextlib.suppress
+#   会让"这里故意吞掉"这件事变得不明显。
+select = ["E4", "E7", "E9", "F", "B", "I", "UP"]
+ignore = [
+    "E402",   # 延迟 import：为打破循环依赖而刻意写在函数/条件里
+    "UP042",  # `(str, Enum)` → `StrEnum` 会改变 str()/格式化的输出，语义变更，不动
+    "B008",   # 默认值里调函数：本项目用于 dataclass/工厂默认值，是有意为之
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里大量"故意不使用"的桩参数与导入顺序偏好
+"tests/**" = ["B007", "E741"]
+
+[tool.mypy]
+python_version = "3.11"
+# ⚠️ 这是一道**增量门禁**，不是"全库类型已达标"。
+#
+# 本仓库大量使用 `Any` / 动态属性（`getattr(self, "_x", None)`、Mixin 的 `self._y`），
+# 全量开 mypy 现在是 250+ 条错误 —— 那是另一件工程（要先补一轮标注）。
+# 所以这里用 `files` 白名单：**只对已经清理干净的文件开门禁**，坏习惯不进新的代码，
+# 存量逐步还。新文件要加进来时，先把它修到 0 再加。
+#
+# `follow_imports = "silent"`：只报白名单文件自己的错，不把被依赖模块的存量错误
+# 倒进来 —— 否则白名单形同虚设。
+files = [
+    "config/",
+    "conversation/",
+    "core/agent/",
+    "core/commands/",
+    "core/context_compression/",
+    "core/coordinator/",
+    "core/hooks/",
+    "core/mcp/",
+    "core/notes/",
+    "core/permissions/",
+    "core/skills/",
+    "core/trace/",
+    "core/worktree/",
+]
+follow_imports = "silent"
+# 未标注类型的函数体也检查（否则 `def f(x):` 里的错误全被放过）
+check_untyped_defs = true
+# 三方库缺 stub 是常态，不因此阻断
+ignore_missing_imports = true

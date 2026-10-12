@@ -17,8 +17,12 @@ async def test_handle_task_done_marks_inactive_and_notifies(tmp_path, monkeypatc
     monkeypatch.setattr("core.team.manager.detect_backend", _detect)
     mgr = Manager(home_dir=tmp_path, wt_mgr=None, task_mgr=None, reg=None)
     team = await mgr.create("demo", "")
-    await mgr.add_member(team, TeammateInfo(name="alice", agent_id="agent-a",
-                                            backend_type=BackendType.IN_PROCESS))
+    await mgr.add_member(
+        team,
+        TeammateInfo(
+            name="alice", agent_id="agent-a", backend_type=BackendType.IN_PROCESS
+        ),
+    )
 
     await mgr.handle_task_done("agent-a")
 

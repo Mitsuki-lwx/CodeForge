@@ -27,7 +27,6 @@ from core.prompts.builder import PromptBuilder
 from llm.client import LLMClient
 from llm.stream_events import CompletionDone, StreamError
 
-
 # ── 代表性工具定义（仅作稳定前缀）────────────────────────────────
 _TOOL_DEFS = [
     {
@@ -39,7 +38,16 @@ _TOOL_DEFS = [
             "required": ["arg"],
         },
     }
-    for t in ("bash", "read_file", "write_file", "edit_file", "glob", "grep", "agent", "state")
+    for t in (
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "agent",
+        "state",
+    )
 ]
 
 _MEMORY_INDEX = (
@@ -132,12 +140,18 @@ def _metrics(protocol: str, r: dict) -> tuple[int, int]:
 
 async def _run(provider: ProviderConfig, turns: int) -> None:
     client = LLMClient.create(provider)
-    builder = PromptBuilder(model=provider.model, instructions=_INSTRUCTIONS, memory=_MEMORY_INDEX)
+    builder = PromptBuilder(
+        model=provider.model, instructions=_INSTRUCTIONS, memory=_MEMORY_INDEX
+    )
     assembly = builder.build_full(env_info=_ENV_INFO, tool_defs=_TOOL_DEFS)
 
     stable_chars = sum(len(b.content) for b in assembly.cached)
-    print(f"\n== 长对话缓存实测 {provider.name} ({provider.protocol}, {provider.model}) ==")
-    print(f"   稳定前缀约 {stable_chars} 字符；模拟 {turns} 轮累积对话（每轮重发全部历史）\n")
+    print(
+        f"\n== 长对话缓存实测 {provider.name} ({provider.protocol}, {provider.model}) =="
+    )
+    print(
+        f"   稳定前缀约 {stable_chars} 字符；模拟 {turns} 轮累积对话（每轮重发全部历史）\n"
+    )
 
     history: list[APIMessage] = []
     rows: list[tuple[int, int, int, float]] = []
@@ -163,8 +177,12 @@ async def _run(provider: ProviderConfig, turns: int) -> None:
     avg_miss = sum(x[2] for x in warm) / len(warm)
     last_total, last_hit, _, last_rate = rows[-1]
     print("\n   ── 结果（跳过冷启动第 1 轮）──")
-    print(f"   命中率：中位数 {med_rate:.1%}，末轮 {last_rate:.1%}（{last_hit}/{last_total} tokens）")
-    print(f"   每轮平均仅新增 {avg_miss:.0f} tokens 重新计费，其余（含全部历史）命中缓存")
+    print(
+        f"   命中率：中位数 {med_rate:.1%}，末轮 {last_rate:.1%}（{last_hit}/{last_total} tokens）"
+    )
+    print(
+        f"   每轮平均仅新增 {avg_miss:.0f} tokens 重新计费，其余（含全部历史）命中缓存"
+    )
     print(
         f"   可写进简历的一句话：「{turns} 轮长对话中，prompt cache 命中率稳定在 "
         f"{med_rate:.0%} 上下（中位数），每轮仅增量部分重新计费」"

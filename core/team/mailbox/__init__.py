@@ -71,9 +71,7 @@ class Box:
             data = self._read_raw(agent_id)
         return [Message.from_dict(m) for m in data.get(_MESSAGES_KEY, [])]
 
-    async def read_unread(
-        self, agent_id: str
-    ) -> tuple[list[int], list[Message]]:
+    async def read_unread(self, agent_id: str) -> tuple[list[int], list[Message]]:
         """读回未读消息：返回 (indices, messages)。读取本身不改动 read 状态。"""
         msgs = await self.read(agent_id)
         unread_indices: list[int] = []

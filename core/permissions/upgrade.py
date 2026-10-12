@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from core.permissions.hitl import HITLChoice, HITLRequest, HITLResponse
 
@@ -150,18 +150,14 @@ class ApprovalUpgrader:
 
         try:
             resp = await asyncio.wait_for(fut, timeout=self._timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ApprovalOutcome(
                 allowed=False,
                 reason=f"审批超时（{self._timeout:.0f}s 无应答），按拒绝处理",
             )
 
         if resp is None:
-            return ApprovalOutcome(
-                allowed=False, reason="审批处理失败，按拒绝处理"
-            )
+            return ApprovalOutcome(allowed=False, reason="审批处理失败，按拒绝处理")
         if resp.choice == HITLChoice.DENY:
-            return ApprovalOutcome(
-                allowed=False, reason="用户在审批中拒绝了该调用"
-            )
+            return ApprovalOutcome(allowed=False, reason="用户在审批中拒绝了该调用")
         return ApprovalOutcome(allowed=True, choice=resp.choice.value)

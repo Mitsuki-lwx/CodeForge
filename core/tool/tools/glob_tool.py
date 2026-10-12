@@ -5,7 +5,7 @@ from pathlib import Path
 from core.tool.context import ExecutionContext
 from core.tool.interface import Tool
 from core.tool.result import ToolResult
-from core.tool.tools import SKIP_DIRS, _path_climbs_to_skip
+from core.tool.tools import _path_climbs_to_skip
 
 
 class GlobTool(Tool):

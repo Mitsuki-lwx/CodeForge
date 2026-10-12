@@ -65,7 +65,9 @@ class TestReadFile:
     async def test_read_with_offset_limit(self, read_file, ctx, tmp_root):
         f = tmp_root / "lines.txt"
         f.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
-        result = await read_file.execute(ctx, {"file_path": str(f), "offset": 1, "limit": 2})
+        result = await read_file.execute(
+            ctx, {"file_path": str(f), "offset": 1, "limit": 2}
+        )
         assert result.success is True
         assert result.data == "line2\nline3\n"
         assert result.meta["truncated"] is True
@@ -105,7 +107,9 @@ class TestWriteFile:
     @pytest.mark.asyncio
     async def test_write_new_file(self, write_file, ctx, tmp_root):
         f = tmp_root / "new.txt"
-        result = await write_file.execute(ctx, {"file_path": str(f), "content": "Hello"})
+        result = await write_file.execute(
+            ctx, {"file_path": str(f), "content": "Hello"}
+        )
         assert result.success is True
         assert f.read_text(encoding="utf-8") == "Hello"
 
@@ -121,14 +125,18 @@ class TestWriteFile:
     async def test_append(self, write_file, ctx, tmp_root):
         f = tmp_root / "append.txt"
         f.write_text("Base ", encoding="utf-8")
-        result = await write_file.execute(ctx, {"file_path": str(f), "content": "Appended", "append": True})
+        result = await write_file.execute(
+            ctx, {"file_path": str(f), "content": "Appended", "append": True}
+        )
         assert result.success is True
         assert f.read_text(encoding="utf-8") == "Base Appended"
 
     @pytest.mark.asyncio
     async def test_auto_create_parent_dir(self, write_file, ctx, tmp_root):
         f = tmp_root / "sub" / "deep" / "file.txt"
-        result = await write_file.execute(ctx, {"file_path": str(f), "content": "Auto dir"})
+        result = await write_file.execute(
+            ctx, {"file_path": str(f), "content": "Auto dir"}
+        )
         assert result.success is True
         assert f.exists()
 
@@ -149,7 +157,10 @@ class TestEditFile:
         f.write_text("hello world", encoding="utf-8")
         result = await edit_file.execute(
             ctx,
-            {"file_path": str(f), "edits": [{"old_string": "world", "new_string": "there"}]},
+            {
+                "file_path": str(f),
+                "edits": [{"old_string": "world", "new_string": "there"}],
+            },
         )
         assert result.success is True
         assert f.read_text(encoding="utf-8") == "hello there"
@@ -264,7 +275,10 @@ class TestEditFile:
     async def test_file_not_found(self, edit_file, ctx):
         result = await edit_file.execute(
             ctx,
-            {"file_path": "/nonexistent_file_xyz", "edits": [{"old_string": "a", "new_string": "b"}]},
+            {
+                "file_path": "/nonexistent_file_xyz",
+                "edits": [{"old_string": "a", "new_string": "b"}],
+            },
         )
         assert result.success is False
         assert "not found" in result.error.lower()

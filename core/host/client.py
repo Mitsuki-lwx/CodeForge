@@ -203,9 +203,7 @@ class HostClient:
 
         self._counter += 1
         req_id = str(self._counter)
-        fut: asyncio.Future[dict[str, Any]] = (
-            asyncio.get_running_loop().create_future()
-        )
+        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[req_id] = fut
         try:
             self._writer.write(encode_frame({"id": req_id, **payload}))

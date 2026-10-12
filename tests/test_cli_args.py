@@ -131,3 +131,46 @@ def test_unattended_policy_omitted_stays_none() -> None:
     """省略时必须是 `None`（= 交给 config 决定），不能被 argparse 填上默认值。"""
     assert _parse_args(["host"]).unattended_policy is None
 
+
+def test_mcp_subcommand_takes_verb_and_subject() -> None:
+    """`codeforge mcp add playwright` —— 三个位置参数，且不吞掉别的 flag。"""
+    args = _parse_args(["mcp", "add", "playwright"])
+    assert args.command == "mcp"
+    assert args.target == "add"
+    assert args.subject == "playwright"
+
+
+def test_mcp_subcommand_does_not_break_team_member_flags() -> None:
+    """既有的 pane 队友调用方是一串平铺 flag —— 加第三个位置参数不能打穿它。"""
+    args = _parse_args(["--team-member", "--team", "t", "--member", "host"])
+    assert args.team_member is True
+    assert args.member == "host"
+    assert args.command == ""
+    assert args.subject == ""
+
+
+def test_cmd_mcp_add_writes_config(tmp_path, monkeypatch, capsys) -> None:
+    from main import _cmd_mcp
+
+    target = tmp_path / "u.json"
+    monkeypatch.setattr("core.mcp.config.USER_CONFIG_PATH", target)
+    rc = _cmd_mcp(_parse_args(["mcp", "add", "playwright"]))
+    assert rc == 0
+    assert target.exists()
+    assert "playwright" in target.read_text(encoding="utf-8")
+
+
+def test_cmd_mcp_unknown_template_fails_clearly(capsys) -> None:
+    from main import _cmd_mcp
+
+    rc = _cmd_mcp(_parse_args(["mcp", "add", "nope"]))
+    assert rc == 2
+    assert "没有" in capsys.readouterr().out
+
+
+def test_cmd_mcp_without_subject_prints_usage(capsys) -> None:
+    from main import _cmd_mcp
+
+    rc = _cmd_mcp(_parse_args(["mcp", "add"]))
+    assert rc == 2
+    assert "用法" in capsys.readouterr().out

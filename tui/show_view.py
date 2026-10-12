@@ -86,7 +86,11 @@ def overview(app: Any, *, tail: int = DEFAULT_ROUND_TAIL) -> list[str]:
 
 
 def transcript(
-    app: Any, index: int, *, tail: int = DEFAULT_TAIL, full: bool = False,
+    app: Any,
+    index: int,
+    *,
+    tail: int = DEFAULT_TAIL,
+    full: bool = False,
     only_tools: bool = False,
 ) -> list[str]:
     """`/show <n>`：某一轮全文。"""

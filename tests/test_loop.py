@@ -29,9 +29,7 @@ class _EchoLoop(AgentLoop):
     async def run(self, agent, conv, user_input):
         from core.agent.events import AgentFinished
 
-        yield AgentFinished(
-            text="echo", total_usage={}, iterations=1, elapsed_s=0.1
-        )
+        yield AgentFinished(text="echo", total_usage={}, iterations=1, elapsed_s=0.1)
 
     async def run_to_completion(self, agent, conv, task="", events=None):
         return "echo"
@@ -39,7 +37,9 @@ class _EchoLoop(AgentLoop):
 
 def _agent() -> Agent:
     return Agent(
-        registry=__import__("core.tool.registry", fromlist=["ToolRegistry"]).ToolRegistry(),
+        registry=__import__(
+            "core.tool.registry", fromlist=["ToolRegistry"]
+        ).ToolRegistry(),
         llm_client=_Client(),
         exec_ctx=ExecutionContext(cwd=Path(tempfile.mkdtemp()), session_id="main"),
         conversation=ConversationManager(),
@@ -48,6 +48,7 @@ def _agent() -> Agent:
 
 
 # ── 默认 ReactLoop ────────────────────────────────────────────────
+
 
 def test_default_loop_is_react():
     a = _agent()
@@ -61,6 +62,7 @@ def test_set_loop_switches():
 
 
 # ── load_loop ─────────────────────────────────────────────────────
+
 
 def test_load_loop_default_and_react():
     assert isinstance(load_loop(""), ReactLoop)
@@ -97,6 +99,7 @@ def test_load_loop_module_without_loop_falls_back(tmp_path):
 
 # ── 自定义 loop 生效 ──────────────────────────────────────────────
 
+
 async def test_custom_loop_run_used():
     a = _agent()
     a.set_loop(_EchoLoop())
@@ -111,6 +114,7 @@ async def test_custom_loop_run_used():
 
 # ── 子 agent 继承 loop ────────────────────────────────────────────
 
+
 def test_subagent_inherits_loop():
     a = _agent()
     a.set_loop(_EchoLoop())
@@ -123,6 +127,7 @@ def test_subagent_inherits_loop():
 
 
 # ── 运行阶段状态机（idle/running）──────────────────────────────────
+
 
 def test_phase_initial_idle():
     a = _agent()
@@ -150,13 +155,15 @@ async def test_phase_running_during_run():
 
 # ── pre_step 钩子（每轮 LLM 前拦截）───────────────────────────────
 
+
 async def test_pre_step_blocked_stops_run(tmp_path):
     from core.agent.events import AgentError
-    from core.hooks.runner import HookRunner
     from core.hooks.rules import HookAction, HookRule
+    from core.hooks.runner import HookRunner
 
     rule = HookRule(
-        name="budget", event="pre_step",
+        name="budget",
+        event="pre_step",
         action=HookAction(type="command", command="exit 1"),
     )
     runner = HookRunner(rules=[rule], cwd=tmp_path)
@@ -171,11 +178,12 @@ async def test_pre_step_blocked_stops_run(tmp_path):
 
 async def test_pre_step_pass_allows_run(tmp_path):
     from core.agent.events import AgentError, AgentFinished
-    from core.hooks.runner import HookRunner
     from core.hooks.rules import HookAction, HookRule
+    from core.hooks.runner import HookRunner
 
     rule = HookRule(
-        name="ok", event="pre_step",
+        name="ok",
+        event="pre_step",
         action=HookAction(type="command", command="exit 0"),
     )
     runner = HookRunner(rules=[rule], cwd=tmp_path)
@@ -191,6 +199,7 @@ async def test_pre_step_pass_allows_run(tmp_path):
 
 # ── turn 结束原因 + max-tokens sticky ─────────────────────────────
 
+
 class _StopClient:
     """mock LLM：每轮返回指定 stop_reason。"""
 
@@ -199,17 +208,23 @@ class _StopClient:
     def __init__(self, stops):
         self._stops = list(stops)
 
-    async def stream_chat(self, messages, system_prompt="", tools=None, system_blocks=None):
+    async def stream_chat(
+        self, messages, system_prompt="", tools=None, system_blocks=None
+    ):
         from llm.stream_events import CompletionDone, TextChunk
 
         for sr in self._stops:
             yield TextChunk(text="ok")
-            yield CompletionDone(usage={"input_tokens": 1, "output_tokens": 1}, stop_reason=sr)
+            yield CompletionDone(
+                usage={"input_tokens": 1, "output_tokens": 1}, stop_reason=sr
+            )
 
 
 def _agent_with(client):
     return Agent(
-        registry=__import__("core.tool.registry", fromlist=["ToolRegistry"]).ToolRegistry(),
+        registry=__import__(
+            "core.tool.registry", fromlist=["ToolRegistry"]
+        ).ToolRegistry(),
         llm_client=client,
         exec_ctx=ExecutionContext(cwd=Path(tempfile.mkdtemp()), session_id="main"),
         conversation=ConversationManager(),
@@ -243,11 +258,12 @@ async def test_turn_end_max_tokens():
 
 async def test_pre_step_blocked_sets_reason(tmp_path):
     from core.agent.events import AgentError
-    from core.hooks.runner import HookRunner
     from core.hooks.rules import HookAction, HookRule
+    from core.hooks.runner import HookRunner
 
     rule = HookRule(
-        name="budget", event="pre_step",
+        name="budget",
+        event="pre_step",
         action=HookAction(type="command", command="exit 1"),
     )
     runner = HookRunner(rules=[rule], cwd=tmp_path)

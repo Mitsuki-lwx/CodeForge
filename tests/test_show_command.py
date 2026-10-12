@@ -59,7 +59,10 @@ def _tool(tid, name):
     from conversation.message import Message, MessageRole
 
     return Message(
-        role=MessageRole.ASSISTANT, content="", tool_use_id=tid, tool_name=name,
+        role=MessageRole.ASSISTANT,
+        content="",
+        tool_use_id=tid,
+        tool_name=name,
         tool_input={},
     )
 
@@ -134,12 +137,14 @@ def test_show_non_numeric_selector_is_error() -> None:
 def test_show_tools_filters_but_keeps_question() -> None:
     from conversation.message import Message, MessageRole
 
-    app = _App([
-        _user("问题在这"),
-        _tool("t1", "Grep"),
-        Message(role=MessageRole.USER, content="匹配结果", tool_use_id="t1"),
-        _agent("答复"),
-    ])
+    app = _App(
+        [
+            _user("问题在这"),
+            _tool("t1", "Grep"),
+            Message(role=MessageRole.USER, content="匹配结果", tool_use_id="t1"),
+            _agent("答复"),
+        ]
+    )
     out = "\n".join(show_view.render(app, "1 --tools"))
     assert "Grep" in out and "匹配结果" in out
     assert "问：问题在这" in out
@@ -150,10 +155,12 @@ def test_show_full_does_not_truncate() -> None:
     from conversation.message import Message, MessageRole
 
     long = "Z" * 2000
-    app = _App([
-        _user("a"),
-        Message(role=MessageRole.USER, content=long, tool_use_id="t1"),
-    ])
+    app = _App(
+        [
+            _user("a"),
+            Message(role=MessageRole.USER, content=long, tool_use_id="t1"),
+        ]
+    )
     assert long in "\n".join(show_view.render(app, "1 --full"))
     assert long not in "\n".join(show_view.render(app, "1"))
 
@@ -166,7 +173,9 @@ def test_show_tail_limits_overview() -> None:
 
 def test_show_cost_reports_usage_and_redaction() -> None:
     app = _App([_user("a"), _tool("t1", "Grep")])
-    app.agent = type("A", (), {"_total_usage": {"input_tokens": 100, "output_tokens": 20}})()
+    app.agent = type(
+        "A", (), {"_total_usage": {"input_tokens": 100, "output_tokens": 20}}
+    )()
     out = "\n".join(show_view.render(app, "--cost"))
     assert "输入 token   100" in out
     assert "落盘脱敏" in out

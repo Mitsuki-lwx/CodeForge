@@ -63,7 +63,10 @@ def run_mock_server() -> None:
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "message": {"type": "string", "description": "The message to echo"}
+                                "message": {
+                                    "type": "string",
+                                    "description": "The message to echo",
+                                }
                             },
                             "required": ["message"],
                         },
@@ -109,6 +112,7 @@ def run_mock_server() -> None:
         elif method == "tools/call_timeout":
             # Simulate a slow tool
             import time
+
             time.sleep(999)
             return
 

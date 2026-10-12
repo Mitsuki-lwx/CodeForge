@@ -29,7 +29,11 @@ class Iterm2Backend:
         cmd = _build_member_cmd(req)
         quoted_cmd = " ".join(shlex.quote(c) for c in cmd)
         proc = await asyncio.create_subprocess_exec(
-            self._it2, "split", "--new-pane", "--command", quoted_cmd,
+            self._it2,
+            "split",
+            "--new-pane",
+            "--command",
+            quoted_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -47,7 +51,11 @@ class Iterm2Backend:
         if not pane_id:
             return
         proc = await asyncio.create_subprocess_exec(
-            self._it2, "send-text", "--pane", pane_id, "",
+            self._it2,
+            "send-text",
+            "--pane",
+            pane_id,
+            "",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -58,7 +66,10 @@ class Iterm2Backend:
         if not pane_id:
             return
         proc = await asyncio.create_subprocess_exec(
-            self._it2, "close-pane", "--pane", pane_id,
+            self._it2,
+            "close-pane",
+            "--pane",
+            pane_id,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )

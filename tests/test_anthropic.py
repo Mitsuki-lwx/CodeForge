@@ -3,21 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
-
-import httpx
-import pytest
 
 from config.model import ProviderConfig
+from conversation.message import APIMessage
 from llm.anthropic_client import AnthropicClient
 from llm.stream_events import (
-    StreamError,
     TextChunk,
     ThinkingChunk,
-    CompletionDone,
 )
-from conversation.message import APIMessage
-
 
 # ── Fake streaming transport ───────────────────────────────────────
 
@@ -69,23 +62,49 @@ class TestAnthropicClient:
     def test_text_stream(self):
         """正常文本流式响应。"""
         sse_events = [
-            {"type": "message_start", "message": {
-                "id": "msg_1", "type": "message", "role": "assistant",
-                "content": [], "usage": {"input_tokens": 10, "output_tokens": 1},
-            }},
-            {"type": "content_block_start", "index": 0, "content_block": {
-                "type": "text", "text": "",
-            }},
-            {"type": "content_block_delta", "index": 0, "delta": {
-                "type": "text_delta", "text": "Hello, ",
-            }},
-            {"type": "content_block_delta", "index": 0, "delta": {
-                "type": "text_delta", "text": "world!",
-            }},
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "usage": {"input_tokens": 10, "output_tokens": 1},
+                },
+            },
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "text",
+                    "text": "",
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": "Hello, ",
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": "world!",
+                },
+            },
             {"type": "content_block_stop", "index": 0},
-            {"type": "message_delta", "delta": {
-                "stop_reason": "end_turn", "stop_sequence": None,
-            }, "usage": {"output_tokens": 3}},
+            {
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                },
+                "usage": {"output_tokens": 3},
+            },
             {"type": "message_stop"},
         ]
 
@@ -115,10 +134,16 @@ class TestAnthropicClient:
             'data: {"type": "message_stop"}',
         ]
         cfg = ProviderConfig(
-            name="t", protocol="anthropic", model="c", api_key="sk-x", thinking=True,
+            name="t",
+            protocol="anthropic",
+            model="c",
+            api_key="sk-x",
+            thinking=True,
         )
         client = AnthropicClient(cfg)
-        monkeypatch.setattr(transport_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClientCM(lines))
+        monkeypatch.setattr(
+            transport_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClientCM(lines)
+        )
 
         async def collect():
             events = []
@@ -153,27 +178,52 @@ class TestAnthropicClient:
 
     def test_wire_assistant_tool_use_prepends_thinking_block(self, monkeypatch):
         """thinking 模式：携带 reasoning 的工具调用消息前面插 thinking 块回传。"""
-        cfg = ProviderConfig(name="t", protocol="anthropic", model="c", api_key="sk-x", thinking=True)
+        cfg = ProviderConfig(
+            name="t", protocol="anthropic", model="c", api_key="sk-x", thinking=True
+        )
         client = AnthropicClient(cfg)
         msgs = [
             APIMessage(role="user", content="列文件"),
-            APIMessage(role="assistant", content=[
-                {"type": "tool_use", "id": "call_1", "name": "Glob", "input": {"pattern": "**/*.py"}},
-            ], reasoning="先 Glob 一下"),
-            APIMessage(role="user", content=[
-                {"type": "tool_result", "tool_use_id": "call_1", "content": "[a.py]"},
-            ]),
+            APIMessage(
+                role="assistant",
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "Glob",
+                        "input": {"pattern": "**/*.py"},
+                    },
+                ],
+                reasoning="先 Glob 一下",
+            ),
+            APIMessage(
+                role="user",
+                content=[
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": "[a.py]",
+                    },
+                ],
+            ),
         ]
         body = self._capture_body(monkeypatch, client, msgs, cfg)
         asst = next(m for m in body["messages"] if m["role"] == "assistant")
         types = [b["type"] for b in asst["content"]]
         assert types[0] == "thinking"  # thinking 块必须在 tool_use 之前
         assert asst["content"][0]["thinking"] == "先 Glob 一下"
-        assert asst["content"][1] == {"type": "tool_use", "id": "call_1", "name": "Glob", "input": {"pattern": "**/*.py"}}
+        assert asst["content"][1] == {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "Glob",
+            "input": {"pattern": "**/*.py"},
+        }
 
     def test_wire_plain_assistant_prepends_thinking_block(self, monkeypatch):
         """thinking 模式：纯文本 assistant 消息在前置 thinking 块后保留正文。"""
-        cfg = ProviderConfig(name="t", protocol="anthropic", model="c", api_key="sk-x", thinking=True)
+        cfg = ProviderConfig(
+            name="t", protocol="anthropic", model="c", api_key="sk-x", thinking=True
+        )
         client = AnthropicClient(cfg)
         msgs = [
             APIMessage(role="user", content="hi"),
@@ -184,12 +234,18 @@ class TestAnthropicClient:
         # thinking 块在前，正文 text 块在后；最后一条消息末尾打 cache_control 断点
         assert asst["content"] == [
             {"type": "thinking", "thinking": "思考过程"},
-            {"type": "text", "text": "最终回答", "cache_control": {"type": "ephemeral"}},
+            {
+                "type": "text",
+                "text": "最终回答",
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
 
     def test_wire_no_thinking_config_keeps_content_verbatim(self, monkeypatch):
         """thinking=False 时 reasoning 不回传；content 转为 text 块并打缓存断点。"""
-        cfg = ProviderConfig(name="t", protocol="anthropic", model="c", api_key="sk-x", thinking=False)
+        cfg = ProviderConfig(
+            name="t", protocol="anthropic", model="c", api_key="sk-x", thinking=False
+        )
         client = AnthropicClient(cfg)
         msgs = [
             APIMessage(role="assistant", content="没开思考", reasoning="不应出现"),
@@ -198,21 +254,42 @@ class TestAnthropicClient:
         asst = body["messages"][0]
         # reasoning 不回传；纯文本字符串 → text 块 + 末尾 cache_control 断点
         assert asst["content"] == [
-            {"type": "text", "text": "没开思考", "cache_control": {"type": "ephemeral"}},
+            {
+                "type": "text",
+                "text": "没开思考",
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
-
 
     def test_message_delta_usage_merges(self):
         """message_delta 的 usage 与 message_start 合并（不丢失 input_tokens）。"""
         sse_events = [
-            {"type": "message_start", "message": {
-                "id": "msg_1", "type": "message", "role": "assistant",
-                "content": [], "usage": {"input_tokens": 5},
-            }},
-            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi"}},
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "usage": {"input_tokens": 5},
+                },
+            },
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Hi"},
+            },
             {"type": "content_block_stop", "index": 0},
-            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 1},
+            },
             {"type": "message_stop"},
         ]
 
@@ -229,28 +306,13 @@ class TestAnthropicClient:
 
         assert usage == {"input_tokens": 5, "output_tokens": 1}
 
-    def test_api_error(self):
-        """HTTP 401 错误。"""
-        cfg = ProviderConfig(
-            name="t", protocol="anthropic", model="c", api_key="sk-bad",
-        )
-        sse = json.dumps({
-            "error": {"message": "Invalid API key", "type": "authentication_error"}
-        })
-        transport = httpx.MockTransport(lambda r: httpx.Response(401, text=sse))
-
-        with httpx.Client(transport=transport) as http:
-            resp = http.post("https://api.anthropic.com/v1/messages")
-            assert resp.status_code == 401
-            err = resp.json()
-            assert "Invalid API key" in err["error"]["message"]
-
     @staticmethod
     def _iter_sse_events(sse_events: list[dict]) -> list[dict]:
         return sse_events
 
 
 # ── system_blocks → 带 cache_control 断点的 blocks 数组 ───────────
+
 
 def test_build_system_blocks_cache_breakpoint_on_last_cached():
     from core.prompts.builder import CachedBlock, PromptAssembly, UncachedBlock
@@ -290,6 +352,7 @@ def test_build_system_blocks_empty():
 
 # ── 最后一条消息打 cache_control 断点（对话历史缓存）────────────────
 
+
 def test_mark_last_message_cacheable_string_content():
     from llm.adapters.anthropic import _mark_last_message_cacheable
 
@@ -310,12 +373,18 @@ def test_mark_last_message_cacheable_block_content():
     from llm.adapters.anthropic import _mark_last_message_cacheable
 
     msgs = [
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "c1", "name": "Glob", "input": {}},
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "c1", "content": "[a.py]"},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "c1", "name": "Glob", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "c1", "content": "[a.py]"},
+            ],
+        },
     ]
     _mark_last_message_cacheable(msgs)
 

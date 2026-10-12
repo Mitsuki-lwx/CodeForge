@@ -15,7 +15,8 @@ import pytest
 from rich.console import Console
 
 from core.agent.events import AgentError, TextDelta
-from tui.app import _StreamRenderer, _consume_agent_stream
+from tui.render import _StreamRenderer
+from tui.session import _consume_agent_stream
 
 
 class FakeAgent:
@@ -73,8 +74,12 @@ async def test_stall_heartbeat_shows_waiting():
 
     # 静默 0.15s > stall_heartbeat=0.05s → 心跳触发;随后收到文本正常结束
     err, text = await _consume_agent_stream(
-        app, _stall_then_text(0.15), renderer, console,
-        stall_heartbeat=0.05, stall_warn_at=0.3,
+        app,
+        _stall_then_text(0.15),
+        renderer,
+        console,
+        stall_heartbeat=0.05,
+        stall_warn_at=0.3,
         track_text=True,
     )
     rendered = buf.getvalue()
@@ -92,8 +97,12 @@ async def test_stall_long_triggers_warning():
 
     # 静默 0.4s > warn_at=0.2s,且 > heartbeat。会连打心跳 + 触发警告。
     err, _ = await _consume_agent_stream(
-        app, _stall_then_text(0.4), renderer, console,
-        stall_heartbeat=0.05, stall_warn_at=0.2,
+        app,
+        _stall_then_text(0.4),
+        renderer,
+        console,
+        stall_heartbeat=0.05,
+        stall_warn_at=0.2,
     )
     rendered = buf.getvalue()
     assert "长期无进展" in rendered
@@ -142,8 +151,12 @@ async def test_normal_flow_no_error():
     renderer = _make_renderer(console)
 
     err, text = await _consume_agent_stream(
-        app, _stall_then_text(0), renderer, console,
-        stall_heartbeat=0.05, stall_warn_at=0.3,
+        app,
+        _stall_then_text(0),
+        renderer,
+        console,
+        stall_heartbeat=0.05,
+        stall_warn_at=0.3,
         track_text=True,
     )
     assert err is False

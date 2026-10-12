@@ -8,6 +8,7 @@ TUI Model 持有同一份 SessionRuntime 跨轮复用，
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from core.context_compression.state import (
     CompactCircuitBreaker,
@@ -15,6 +16,11 @@ from core.context_compression.state import (
     RecoveryState,
     SessionContext,
 )
+
+if TYPE_CHECKING:
+    from core.hooks import HookRunner
+    from core.notes import NoteStore
+    from core.skills.active import ActiveSkills
 
 
 @dataclass
@@ -24,28 +30,27 @@ class SessionRuntime:
     由 TUI Model 在启动阶段构造，每轮通过 Agent(runtime=...) 传入。
     compact 子包不持有此类型的引用。
     """
+
     replacement: ContentReplacementState = field(
         default_factory=ContentReplacementState
     )
     recovery: RecoveryState = field(default_factory=RecoveryState)
-    auto_tracking: CompactCircuitBreaker = field(
-        default_factory=CompactCircuitBreaker
-    )
+    auto_tracking: CompactCircuitBreaker = field(default_factory=CompactCircuitBreaker)
     session: SessionContext | None = None
     context_window: int = 200000
-    usage_anchor: int = 0       # 主对话路径 stream 真实 usage 之和；摘要请求不更新
-    anchor_msg_len: int = 0     # anchor 当时 conv 消息条数
+    usage_anchor: int = 0  # 主对话路径 stream 真实 usage 之和；摘要请求不更新
+    anchor_msg_len: int = 0  # anchor 当时 conv 消息条数
     # 记忆：笔记存储（None 表示未启用自动笔记）与轮次计数
-    notes: object | None = None  # core.notes.NoteStore 实例
-    turn_count: int = 0         # 已完成的 Agent.run 次数（每 5 轮触发记忆更新）
+    notes: NoteStore | None = None
+    turn_count: int = 0  # 已完成的 Agent.run 次数（每 5 轮触发记忆更新）
     # Skill：跨轮激活的 Skill 列表（/clear 时清空）
-    active_skills: object = field(
+    active_skills: ActiveSkills = field(
         default_factory=lambda: __import__(
             "core.skills.active", fromlist=["ActiveSkills"]
         ).ActiveSkills()
     )
     # Hook：运行时持有的 HookRunner（/clear 时 reset 清 once + 注入）
-    hook_runner: object | None = None
+    hook_runner: HookRunner | None = None
     # SubAgent：后台任务完成通知文本列表（TUI 写入，Agent 下次 run 消费）
     pending_reminders: list[str] = field(default_factory=list)
     # asyncio 单线程，无需显式锁

@@ -110,7 +110,9 @@ class TestGrep:
         (tmp_root / "a.txt").write_text("hello", encoding="utf-8")
         (tmp_root / "b.txt").write_text("world", encoding="utf-8")
         (tmp_root / "c.txt").write_text("hello again", encoding="utf-8")
-        result = await grep_tool.execute(ctx, {"pattern": "hello", "output_mode": "files_with_matches"})
+        result = await grep_tool.execute(
+            ctx, {"pattern": "hello", "output_mode": "files_with_matches"}
+        )
         assert result.success is True
         assert set(result.data) == {"a.txt", "c.txt"}
 
@@ -118,7 +120,9 @@ class TestGrep:
     async def test_grep_count(self, grep_tool, ctx, tmp_root):
         (tmp_root / "a.txt").write_text("hello\nhello\nbye", encoding="utf-8")
         (tmp_root / "b.txt").write_text("hello\nbye", encoding="utf-8")
-        result = await grep_tool.execute(ctx, {"pattern": "hello", "output_mode": "count"})
+        result = await grep_tool.execute(
+            ctx, {"pattern": "hello", "output_mode": "count"}
+        )
         assert result.success is True
         assert result.data == 3
 
@@ -177,5 +181,6 @@ class TestSkipDirs:
 
     def test_skip_dirs_constant(self):
         from core.tool.tools import SKIP_DIRS
+
         for d in (".git", ".venv", "node_modules", "__pycache__"):
             assert d in SKIP_DIRS

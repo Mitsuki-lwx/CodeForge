@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
 
-from jsonschema import ValidationError, validate as jsonschema_validate
+from jsonschema import ValidationError
+from jsonschema import validate as jsonschema_validate
 
 from core.tool.context import ExecutionContext
-from core.tool.errors import ToolValidationError
 from core.tool.result import ToolResult
 
 
@@ -66,7 +65,7 @@ class Tool(ABC):
         """Category this tool belongs to, e.g. 'file', 'code_search', 'shell'."""
         ...
 
-    def validate_input(self, input: dict) -> Optional[str]:
+    def validate_input(self, input: dict) -> str | None:
         """Validate *input* against *input_schema*. Return an error string or ``None``."""
         schema = self.input_schema()
         if not schema:

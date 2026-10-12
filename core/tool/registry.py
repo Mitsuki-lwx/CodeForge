@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 from core.tool.context import ExecutionContext
-from core.tool.errors import ToolError, ToolExecutionError, ToolNotFoundError, ToolValidationError
+from core.tool.errors import (
+    ToolError,
+    ToolExecutionError,
+    ToolNotFoundError,
+    ToolValidationError,
+)
 from core.tool.interface import Tool
 from core.tool.result import ToolResult
 
@@ -44,8 +48,8 @@ class ToolRegistry:
         """
         try:
             return self._tools[name]
-        except KeyError:
-            raise ToolNotFoundError(name)
+        except KeyError as e:
+            raise ToolNotFoundError(name) from e
 
     def list(self) -> list[Tool]:
         """Return all registered tools."""
@@ -55,7 +59,7 @@ class ToolRegistry:
         """返回已注册工具数量（O(1)）。"""
         return len(self._tools)
 
-    def definitions_filtered(self, allowed: list[str]) -> "ToolRegistry":
+    def definitions_filtered(self, allowed: list[str]) -> ToolRegistry:
         """返回一个新 ToolRegistry，仅包含白名单中的工具 + 系统工具。
 
         allowed 为空时返回全部工具的拷贝。
@@ -82,9 +86,7 @@ class ToolRegistry:
         if allowed:
             for name in allowed:
                 if name not in self._tools:
-                    raise SkillDependencyError(
-                        f"Tool '{name}' not found in registry"
-                    )
+                    raise SkillDependencyError(f"Tool '{name}' not found in registry")
 
         return filtered
 
@@ -136,7 +138,7 @@ class ToolRegistry:
 
         async with lock:
             # --- execute with retries ---
-            last_error: Optional[Exception] = None
+            last_error: Exception | None = None
             timed_out = False
             attempts = 0
             max_attempts = 1 + tool.max_retries
@@ -156,13 +158,15 @@ class ToolRegistry:
                     result.meta.setdefault("timeout", timeout)
                     return result
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     timed_out = True
                     last_error = ToolExecutionError(
                         name,
                         f"timed out after {timeout}s (attempt {attempts}/{max_attempts})",
                     )
-                    logger.warning("%s (attempt %d/%d)", last_error, attempts, max_attempts)
+                    logger.warning(
+                        "%s (attempt %d/%d)", last_error, attempts, max_attempts
+                    )
                     if attempts < max_attempts:
                         wait = 1.0 * (2 ** (attempts - 1))  # 1s, 2s
                         await asyncio.sleep(wait)

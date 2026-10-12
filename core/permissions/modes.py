@@ -70,9 +70,10 @@ class UnattendedPolicy(str, Enum):
 
 # 任何无人值守策略下都必须拒绝的交互式工具：它们存在的意义就是向人索取决策，
 # 无人环境里放行等于替人签字，且放行后也拿不到答案。
-INTERACTIVE_TOOLS: frozenset[str] = frozenset(
-    {"ExitPlanMode", "AskUserQuestion", "Input"}
-)
+#
+# ⚠️ 新增"向人提问"类工具时**必须**在这里登记，否则无人值守下它会被
+# `unattended_decide` 按类别代答成 allow —— 那等于让 agent 自己替用户签字。
+INTERACTIVE_TOOLS: frozenset[str] = frozenset({"ExitPlanMode"})
 
 
 def unattended_decide(

@@ -121,9 +121,8 @@ class AnthropicAdapter(Adapter):
         for m in messages:
             entry: dict[str, Any] = {"role": m.role}
             content = m.content
-            has_tool_use = (
-                isinstance(content, list)
-                and any(b.get("type") == "tool_use" for b in content)
+            has_tool_use = isinstance(content, list) and any(
+                b.get("type") == "tool_use" for b in content
             )
             # 跳过无意义消息：assistant 且 content 为空（空 str 或空数组 []）、
             # 无 tool_use、无 reasoning —— 否则 to_api_format 的 _as_blocks("") 产生
@@ -132,7 +131,11 @@ class AnthropicAdapter(Adapter):
                 m.role == "assistant"
                 and not m.reasoning
                 and not has_tool_use
-                and (content == "" or content == [] or (isinstance(content, list) and not content))
+                and (
+                    content == ""
+                    or content == []
+                    or (isinstance(content, list) and not content)
+                )
             ):
                 continue
             if (
@@ -145,15 +148,25 @@ class AnthropicAdapter(Adapter):
                 text_blocks = (
                     list(content)
                     if isinstance(content, list) and content
-                    else ([{"type": "text", "text": content}] if isinstance(content, str) and content else [])
+                    else (
+                        [{"type": "text", "text": content}]
+                        if isinstance(content, str) and content
+                        else []
+                    )
                 )
-                entry["content"] = [{"type": "thinking", "thinking": m.reasoning}] + text_blocks
+                entry["content"] = [
+                    {"type": "thinking", "thinking": m.reasoning}
+                ] + text_blocks
             elif self.config.thinking and m.reasoning and m.role == "assistant":
                 # 工具调用消息：顶层 thinking 块 + 原有 text/tool_use 块
-                base = list(content) if isinstance(content, list) else (
-                    [{"type": "text", "text": content}] if content else []
+                base = (
+                    list(content)
+                    if isinstance(content, list)
+                    else ([{"type": "text", "text": content}] if content else [])
                 )
-                entry["content"] = [{"type": "thinking", "thinking": m.reasoning}] + base
+                entry["content"] = [
+                    {"type": "thinking", "thinking": m.reasoning}
+                ] + base
             else:
                 entry["content"] = content
             api_messages.append(entry)

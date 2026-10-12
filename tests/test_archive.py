@@ -53,6 +53,7 @@ def test_serialize_tool_message():
 def test_serialize_reasoning_roundtrip():
     """reasoning（thinking 模式）在 serialize → reader 反序列化后保留。"""
     from core.archive.reader import _deserialize
+
     msg = Message(
         role=MessageRole.ASSISTANT,
         content="正文",

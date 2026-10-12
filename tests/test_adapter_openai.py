@@ -23,7 +23,7 @@ class _R:
     status_code = 200
 
     async def aiter_lines(self):
-        yield 'data: [DONE]'
+        yield "data: [DONE]"
 
     async def aread(self):
         return b""
@@ -61,18 +61,36 @@ def capture(monkeypatch):
 
 def test_multi_tool_result_expands_to_separate_tool_messages(monkeypatch, capture):
     """一个含多 tool_result 的消息展开成每 tool_call_id 一条 role=tool。"""
-    cfg = ProviderConfig(name="t", protocol="openai", model="gpt-4", api_key="k", thinking=False)
+    cfg = ProviderConfig(
+        name="t", protocol="openai", model="gpt-4", api_key="k", thinking=False
+    )
     client = OpenAIClient(cfg)
     msgs = [
         APIMessage(role="user", content="列文件"),
-        APIMessage(role="assistant", content=[
-            {"type": "tool_use", "id": "call_0", "name": "glob", "input": {"pattern": "a"}},
-            {"type": "tool_use", "id": "call_1", "name": "bash", "input": {"cmd": "ls"}},
-        ]),
-        APIMessage(role="user", content=[
-            {"type": "tool_result", "tool_use_id": "call_0", "content": "resA"},
-            {"type": "tool_result", "tool_use_id": "call_1", "content": "resB"},
-        ]),
+        APIMessage(
+            role="assistant",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "call_0",
+                    "name": "glob",
+                    "input": {"pattern": "a"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "bash",
+                    "input": {"cmd": "ls"},
+                },
+            ],
+        ),
+        APIMessage(
+            role="user",
+            content=[
+                {"type": "tool_result", "tool_use_id": "call_0", "content": "resA"},
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "resB"},
+            ],
+        ),
     ]
 
     async def collect():
@@ -95,12 +113,23 @@ def test_multi_tool_result_expands_to_separate_tool_messages(monkeypatch, captur
 
 def test_reasoning_carried_on_tool_call_assistant(monkeypatch, capture):
     """thinking 回传：assistant 工具调用消息带顶层 reasoning_content。"""
-    cfg = ProviderConfig(name="t", protocol="openai", model="gpt-4", api_key="k", thinking=True)
+    cfg = ProviderConfig(
+        name="t", protocol="openai", model="gpt-4", api_key="k", thinking=True
+    )
     client = OpenAIClient(cfg)
     msgs = [
-        APIMessage(role="assistant", content=[
-            {"type": "tool_use", "id": "call_1", "name": "glob", "input": {"pattern": "*.py"}},
-        ], reasoning="需要先查文件"),
+        APIMessage(
+            role="assistant",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "glob",
+                    "input": {"pattern": "*.py"},
+                },
+            ],
+            reasoning="需要先查文件",
+        ),
     ]
 
     async def collect():
@@ -116,17 +145,26 @@ def test_reasoning_carried_on_tool_call_assistant(monkeypatch, capture):
 
 def test_vendor_deepseek_resolves_deepseek_adapter():
     """显式 vendor=deepseek → OpenAIClient 内部用 DeepSeek 适配器。"""
-    cfg = ProviderConfig(name="t", protocol="openai", model="deepseek-v4-flash",
-                         api_key="k", base_url="https://api.deepseek.com", vendor="deepseek")
+    cfg = ProviderConfig(
+        name="t",
+        protocol="openai",
+        model="deepseek-v4-flash",
+        api_key="k",
+        base_url="https://api.deepseek.com",
+        vendor="deepseek",
+    )
     client = OpenAIClient(cfg)
     assert type(client._session.adapter).__name__ == "DeepSeekConversationAdapter"
 
 
 def test_vendor_auto_detect_plain_openai():
     """无 vendor + 普通端点 → 基础 OpenAI 适配器。"""
-    assert resolve_adapter_class(
-        "openai", None, "gpt-4o", "https://api.openai.com/v1"
-    ).__name__ == "OpenAIConversationAdapter"
+    assert (
+        resolve_adapter_class(
+            "openai", None, "gpt-4o", "https://api.openai.com/v1"
+        ).__name__
+        == "OpenAIConversationAdapter"
+    )
 
 
 # ── finish_reason 兼容性：空字符串 vs null ────────────────────────────────
@@ -194,12 +232,20 @@ def test_empty_finish_reason_emits_single_tool_use():
     "tool_calls"。修复前会发出多个 ToolUse（含空 input）。
     """
     rows = [
-        _chunk({"role": "assistant", "content": "", "tool_calls": [
-            _tools_arg("", call_id="call_x", name="write_file")]}, finish=""),
-        _chunk({"content": "", "tool_calls": [
-            _tools_arg('{"path": "a.txt", ')]}, finish=""),
-        _chunk({"content": "", "tool_calls": [
-            _tools_arg('"content": "hi"}')]}, finish=""),
+        _chunk(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [_tools_arg("", call_id="call_x", name="write_file")],
+            },
+            finish="",
+        ),
+        _chunk(
+            {"content": "", "tool_calls": [_tools_arg('{"path": "a.txt", ')]}, finish=""
+        ),
+        _chunk(
+            {"content": "", "tool_calls": [_tools_arg('"content": "hi"}')]}, finish=""
+        ),
         _chunk({"content": ""}, finish="tool_calls"),
         "data: [DONE]",
     ]
@@ -217,8 +263,10 @@ def test_empty_finish_reason_emits_single_tool_use():
 def test_repeated_nonempty_finish_reason_does_not_duplicate():
     """上游重复给出非空 finish_reason 时，工具调用仍只发射一次。"""
     rows = [
-        _chunk({"tool_calls": [_tools_arg('{"p": 1}', call_id="call_y", name="glob")]},
-               finish="tool_calls"),
+        _chunk(
+            {"tool_calls": [_tools_arg('{"p": 1}', call_id="call_y", name="glob")]},
+            finish="tool_calls",
+        ),
         _chunk({}, finish="tool_calls"),
         "data: [DONE]",
     ]
@@ -232,7 +280,9 @@ def test_repeated_nonempty_finish_reason_does_not_duplicate():
 def test_done_only_upstream_still_emits_pending_tools():
     """上游全程不给非空 finish_reason、只以 [DONE] 收尾时，工具调用不能丢。"""
     rows = [
-        _chunk({"tool_calls": [_tools_arg('{"cmd": "ls"}', call_id="call_z", name="bash")]}),
+        _chunk(
+            {"tool_calls": [_tools_arg('{"cmd": "ls"}', call_id="call_z", name="bash")]}
+        ),
         "data: [DONE]",
     ]
 
@@ -248,7 +298,9 @@ def test_done_only_upstream_still_emits_pending_tools():
 def test_standard_openai_null_finish_reason_still_single_emit():
     """标准 OpenAI 语义（null 表示未结束）不受影响，保持单次发射。"""
     rows = [
-        _chunk({"tool_calls": [_tools_arg("", call_id="call_s", name="read")]}, finish=None),
+        _chunk(
+            {"tool_calls": [_tools_arg("", call_id="call_s", name="read")]}, finish=None
+        ),
         _chunk({"tool_calls": [_tools_arg('{"f": "x"}')]}, finish=None),
         _chunk({"content": ""}, finish="tool_calls"),
         "data: [DONE]",

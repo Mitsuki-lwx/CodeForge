@@ -89,7 +89,7 @@ async def run_one(
     client = LLMClient.create(provider)
     # CodeForge 内部的 execution session（用于归档/审计，per-item）；与发往 Langfuse
     # 的 OTel 根 span session（整条 run 归组）是两回事，变量分开避免互相覆盖。
-    exec_session_id = f"bench:{dataset_name}:{item.get('name','')}"
+    exec_session_id = f"bench:{dataset_name}:{item.get('name', '')}"
     exec_ctx = ExecutionContext(cwd=tmp, session_id=exec_session_id)
     conv = ConversationManager(system_prompt=AGENT_SYSTEM_PROMPT)
     agent = Agent(
@@ -116,7 +116,8 @@ async def run_one(
 
     try:
         from core.observability.providers import snapshot as _snapshot
-        _before = (_snapshot().get("codeforge.tool.calls") or 0)
+
+        _before = _snapshot().get("codeforge.tool.calls") or 0
     except Exception:  # noqa: BLE001
         _before = None
 
@@ -131,7 +132,7 @@ async def run_one(
     tool_calls = None
     if _before is not None:
         try:
-            _after = (_snapshot().get("codeforge.tool.calls") or 0)
+            _after = _snapshot().get("codeforge.tool.calls") or 0
             tool_calls = max(0, _after - _before)
         except Exception:  # noqa: BLE001
             tool_calls = None

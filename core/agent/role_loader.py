@@ -85,8 +85,13 @@ class Catalog:
         """按 name 查找角色，返回优先级最高的定义。"""
         return self._defs.get(name)
 
-    def list(self) -> list[AgentRole]:
-        """返回所有角色（按 name 升序）。"""
+    def list_roles(self) -> list[AgentRole]:
+        """返回所有角色（按 name 升序）。
+
+        方法名**不能**叫 `list`：那样会在类作用域里遮蔽内置 `list`，
+        使本文件里所有 `list[AgentRole]` 注解解析失败（mypy 报
+        `Function "Catalog.list" is not valid as a type`）。
+        """
         return sorted(self._defs.values(), key=lambda r: r.name)
 
     def list_by_source(self, src: Source) -> list[AgentRole]:

@@ -131,6 +131,7 @@ _LONG_TERM_MEMORY = PromptModule(
 
 # ── 对外接口 ──────────────────────────────────────────────────
 
+
 def get_fixed_modules() -> list[PromptModule]:
     """返回 7 个固定模块（已填充内容）。"""
     return [

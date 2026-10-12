@@ -48,9 +48,7 @@ class Manager:
     task_mgr: object = None  # task.BackgroundTaskManager
     registry: object = None  # AgentNameRegistry
 
-    _lock: asyncio.Lock = field(
-        default_factory=asyncio.Lock, repr=False, compare=False
-    )
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def __init__(
         self,
@@ -403,14 +401,16 @@ class Manager:
             if not msgs:
                 continue
             for m in msgs:
-                out.append({
-                    "team_name": team.name,
-                    "from_": m.from_,
-                    "type": m.type.value,
-                    "summary": m.summary,
-                    "content": m.content,
-                    "payload": m.payload,
-                    "ts": m.timestamp,
-                })
+                out.append(
+                    {
+                        "team_name": team.name,
+                        "from_": m.from_,
+                        "type": m.type.value,
+                        "summary": m.summary,
+                        "content": m.content,
+                        "payload": m.payload,
+                        "ts": m.timestamp,
+                    }
+                )
             await box.mark_read(team.lead_agent_id, indices)
         return out

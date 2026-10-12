@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.tool.shells import ShellRegistry
+
 if TYPE_CHECKING:
     from core.permissions.upgrade import ApprovalUpgrader
 
@@ -61,6 +63,10 @@ class ExecutionContext:
     # 子 Agent 进度汇（可选）。由 `build_session` 建、经父传给子，
     # 供界面说明"在等谁、等什么"；`None` = 不采集（如测试、无人值守）。
     progress: ProgressSink | None = None
+    # 后台 shell 注册表：`bash(run_in_background=true)` 起的进程放这儿，
+    # 由 `bash_output` / `kill_shell` 读写。每个 context 一份（子 Agent 各自隔离），
+    # 随会话结束由 `SessionBundle.close()` 清场。
+    shells: ShellRegistry = field(default_factory=ShellRegistry)
     # 审批升级通道（可选）。由界面建，**只由 `_run_foreground` 下传到前台子 Agent**
     # —— 子 Agent 的 `ask` 由此冒泡到主 TUI（spec 能力清单第 9 条的第三层）。
     # 主 Agent 自己不挂（保持 `yield HITLRequired` 原路径不变），后台子 Agent 与

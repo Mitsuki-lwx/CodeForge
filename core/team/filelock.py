@@ -42,7 +42,7 @@ async def acquire(lock_path: str | Path):
     lock_path = Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for attempt in range(LOCK_MAX_RETRIES):
+    for _attempt in range(LOCK_MAX_RETRIES):
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
             os.close(fd)

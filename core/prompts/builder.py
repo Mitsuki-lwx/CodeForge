@@ -141,9 +141,7 @@ class PromptBuilder:
 
     # ── Convenience ──────────────────────────────────────────────────
 
-    def build_full(
-        self, env_info: str, tool_defs: list[dict]
-    ) -> PromptAssembly:
+    def build_full(self, env_info: str, tool_defs: list[dict]) -> PromptAssembly:
         """便捷方法：一次完成系统提示 + 工具定义的拼装。
 
         这是 Agent 调用的主入口。

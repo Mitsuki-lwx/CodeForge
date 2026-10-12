@@ -65,12 +65,7 @@ def test_redacts_known_credential_shapes(label: str, secret: str) -> None:
 
 def test_redacts_credential_embedded_in_surrounding_text() -> None:
     """真实场景：凭据是工具输出里的一行，不是一整段。"""
-    text = (
-        "env dump:\n"
-        "GITHUB_TOKEN=ghp_abcdefghij0123456789\n"
-        "PATH=/usr/bin\n"
-        "done."
-    )
+    text = "env dump:\nGITHUB_TOKEN=ghp_abcdefghij0123456789\nPATH=/usr/bin\ndone."
     out = redact_text(text)
     assert "ghp_abcdefghij0123456789" not in out
     assert "GITHUB_TOKEN=ghp_" not in out
@@ -209,10 +204,19 @@ def test_redaction_defaults_to_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("0", False), ("false", False), ("off", False), ("no", False),
-     ("1", True), ("true", True), ("on", True)],
+    [
+        ("0", False),
+        ("false", False),
+        ("off", False),
+        ("no", False),
+        ("1", True),
+        ("true", True),
+        ("on", True),
+    ],
 )
-def test_env_switch(monkeypatch: pytest.MonkeyPatch, value: str, expected: bool) -> None:
+def test_env_switch(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+) -> None:
     monkeypatch.setenv(_ENV, value)
     assert redaction_config().enabled is expected
 

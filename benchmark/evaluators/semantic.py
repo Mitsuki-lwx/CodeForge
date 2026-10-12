@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import json
-import math
 import subprocess
 import sys
 from typing import Any
@@ -26,7 +25,9 @@ _RTOL = 1e-3  # 数值相对容差
 _ATOL = 1e-6  # 数值绝对容差（覆盖接近 0 的情况）
 
 
-def run_exe(cwd: str, cmd: list[str] | None = None, input_text: str | None = None) -> tuple[int, str, str]:
+def run_exe(
+    cwd: str, cmd: list[str] | None = None, input_text: str | None = None
+) -> tuple[int, str, str]:
     """在 cwd 里跑 cmd（默认 python -c 读 stdin），返回 (rc, stdout, stderr)。
 
     Args:
@@ -74,8 +75,9 @@ def semantic_equiv(actual: str, want: str, kind: str) -> tuple[int, str]:
             return 0, f"无法解析数值 actual={actual!r}"
         # 相对容差（allclose 语义）：比值为 0 时退到绝对容差
         ok = abs(a - w) <= _ATOL + _RTOL * abs(w)
-        return (1 if ok else 0), (f"数值近似 {a:.6g}≈{w:.6g}" if ok
-                                   else f"数值不近 {a:.6g} vs {w:.6g}")
+        return (1 if ok else 0), (
+            f"数值近似 {a:.6g}≈{w:.6g}" if ok else f"数值不近 {a:.6g} vs {w:.6g}"
+        )
 
     if kind in ("set", "unordered"):
         try:
@@ -87,14 +89,17 @@ def semantic_equiv(actual: str, want: str, kind: str) -> tuple[int, str]:
         a_hist = {ch: a.count(ch) for ch in set(a)}
         w_hist = {ch: w.count(ch) for ch in set(w)}
         return (1 if a_hist == w_hist else 0), (
-            "无序字符直方图一致" if a_hist == w_hist else f"字符直方图不一致 {a_hist} vs {w_hist}"
+            "无序字符直方图一致"
+            if a_hist == w_hist
+            else f"字符直方图不一致 {a_hist} vs {w_hist}"
         )
 
     if kind in ("lines", "text"):
         a = _parse_lines(actual)
         w = _parse_lines(want)
         return (1 if a == w else 0), (
-            "行序列等价（忽略空白/空行）" if a == w
+            "行序列等价（忽略空白/空行）"
+            if a == w
             else f"行不等 actual={a!r} want={w!r}"
         )
 
@@ -119,7 +124,8 @@ def _json_deep_eq(a: Any, b: Any) -> bool:
     if isinstance(a, list) and isinstance(b, list):
         if len(a) != len(b):
             return False
-        return all(_json_deep_eq(x, y) for x, y in zip(a, b))
+        # len(a) == len(b) 已在上面判过 —— strict=True 表达这个不变量
+        return all(_json_deep_eq(x, y) for x, y in zip(a, b, strict=True))
     if isinstance(a, (int, str)) and isinstance(b, (int, str)):
         return a == b
     if isinstance(a, float) and isinstance(b, float):
@@ -141,7 +147,9 @@ def evaluate_semantic(item: dict, output: str, cwd: str | None = None) -> dict:
     cwd 缺失时只做第三种（安全的文本归约），不执行。
     """
     cases = item.get("cases")
-    cmd = item.get("cmd") or (item.get("script") and [sys.executable, "-c", item["script"]])
+    cmd = item.get("cmd") or (
+        item.get("script") and [sys.executable, "-c", item["script"]]
+    )
     exec_ok = cwd is not None and bool(cmd or item.get("reference-exec"))
 
     if not exec_ok:
@@ -155,7 +163,9 @@ def evaluate_semantic(item: dict, output: str, cwd: str | None = None) -> dict:
             kind = c.get("kind", "lines")
             expect_err = bool(c.get("expect_error"))
             try:
-                rc, out, _err = run_exe(cwd, cmd=cmd, input_text=inp if inp is not None else "")
+                rc, out, _err = run_exe(
+                    cwd, cmd=cmd, input_text=inp if inp is not None else ""
+                )
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 passes.append(0)
                 continue
@@ -168,8 +178,7 @@ def evaluate_semantic(item: dict, output: str, cwd: str | None = None) -> dict:
         if not passes:
             return _mk(None, "cases 为空")
         return _mk(
-            1.0 if all(p == 1 for p in passes) else
-            (sum(passes) / len(passes)),
+            1.0 if all(p == 1 for p in passes) else (sum(passes) / len(passes)),
             f"{sum(passes)}/{len(passes)} 用例语义通过",
         )
 

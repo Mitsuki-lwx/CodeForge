@@ -91,7 +91,9 @@ async def handle_observability(ui: UI, args: str = "") -> None:
         import os
         from pathlib import Path
 
-        base = Path(os.getenv("CODEFORGE_OBS_DIR") or (Path.home() / ".codeforge" / "obs"))
+        base = Path(
+            os.getenv("CODEFORGE_OBS_DIR") or (Path.home() / ".codeforge" / "obs")
+        )
         for sub in ("metrics", "logs", "traces"):
             p = base / sub / "data.jsonl"
             size = p.stat().st_size if p.exists() else 0

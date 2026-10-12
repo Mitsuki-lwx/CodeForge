@@ -21,26 +21,64 @@ class PlanMode(str, Enum):
 # ── 自动检测 ──────────────────────────────────────────────
 
 _PLAN_INTENT_KEYWORDS: list[str] = [
-    "先计划", "计划一下", "计划模式", "只规划", "先规划",
-    "不要执行", "别执行", "别动手", "先别做",
-    "只分析", "先分析", "分析一下", "只读模式",
-    "先看看", "看看先", "先想想", "想一下",
-    "给个方案", "先出方案", "出个计划",
-    "别改", "不要改", "不要写", "先别改",
-    "just plan", "plan first", "plan mode", "plan only",
-    "don't execute", "don't run", "don't write", "do not execute",
-    "read only", "read-only", "no write", "without executing",
-    "let me plan", "give me a plan", "outline first",
+    "先计划",
+    "计划一下",
+    "计划模式",
+    "只规划",
+    "先规划",
+    "不要执行",
+    "别执行",
+    "别动手",
+    "先别做",
+    "只分析",
+    "先分析",
+    "分析一下",
+    "只读模式",
+    "先看看",
+    "看看先",
+    "先想想",
+    "想一下",
+    "给个方案",
+    "先出方案",
+    "出个计划",
+    "别改",
+    "不要改",
+    "不要写",
+    "先别改",
+    "just plan",
+    "plan first",
+    "plan mode",
+    "plan only",
+    "don't execute",
+    "don't run",
+    "don't write",
+    "do not execute",
+    "read only",
+    "read-only",
+    "no write",
+    "without executing",
+    "let me plan",
+    "give me a plan",
+    "outline first",
 ]
 
 # ★ 强意图词：无论带什么修饰词，意图都是明确的计划模式，**不参与任何排除**。
 #   理由："只规划"后面加"其他/计划"也不改变"只规划"这个事实。
 _STRONG_INTENT: frozenset[str] = frozenset(
     {
-        "只规划", "只分析", "只读模式", "计划模式",
-        "plan only", "plan mode", "read only", "read-only",
-        "just plan", "plan first", "let me plan",
-        "give me a plan", "outline first",
+        "只规划",
+        "只分析",
+        "只读模式",
+        "计划模式",
+        "plan only",
+        "plan mode",
+        "read only",
+        "read-only",
+        "just plan",
+        "plan first",
+        "let me plan",
+        "give me a plan",
+        "outline first",
     }
 )
 
@@ -50,19 +88,44 @@ _STRONG_INTENT: frozenset[str] = frozenset(
 # E1 引述语境：关键词被当作"别人的话"引起来
 _QUOTE_MARKS = "『』\"''「」‘’“”"
 _REPORT_VERBS = (
-    "文档里", "文档中", "文档", "里面写", "写了", "写的", "说", "提到",
-    "请问", "什么意思", "啥意思", "这句话", "这段", "这句",
+    "文档里",
+    "文档中",
+    "文档",
+    "里面写",
+    "写了",
+    "写的",
+    "说",
+    "提到",
+    "请问",
+    "什么意思",
+    "啥意思",
+    "这句话",
+    "这段",
+    "这句",
 )
 
 # E2 范围限定：否定的是"一部分"，不是"全部"
 _SCOPE_LIMITERS = (
-    "其他", "别的", "其余", "剩下", "格式化", "多余",
+    "其他",
+    "别的",
+    "其余",
+    "剩下",
+    "格式化",
+    "多余",
 )
 
 # E3 反悔 / 纠正：否定出现在历史语境，当前要求是执行
 _REVERSALS = (
-    "改主意", "改主意了", "其实", "现在", "直接", "改成", "重新",
-    "算了", "instead", "actually",
+    "改主意",
+    "改主意了",
+    "其实",
+    "现在",
+    "直接",
+    "改成",
+    "重新",
+    "算了",
+    "instead",
+    "actually",
 )
 
 # E4 否定对象是"计划"本身："不要执行计划" ≠ "进入计划模式"
@@ -93,11 +156,8 @@ def _excluded(hit_kw: str, lowered: str) -> bool:
     # 匹配 "plan" 失败 ⇒ 漏判（实测踩到）。
     tail_core = tail.lstrip(" ，,、：:；;的了吧呢啊呀")
 
-
     # E1 引述：关键词在引号里，或前文在转述别人（**强意图词也适用**）
-    if any(c in _QUOTE_MARKS for c in head[-6:]) or (
-        tail and tail[0] in _QUOTE_MARKS
-    ):
+    if any(c in _QUOTE_MARKS for c in head[-6:]) or (tail and tail[0] in _QUOTE_MARKS):
         return True
     for verb in _REPORT_VERBS:
         if verb in lowered:
@@ -152,14 +212,56 @@ def detect_plan_intent(text: str) -> bool:
 # ── Plan 文件路径生成 ───────────────────────────────────────
 
 _ADJECTIVES = [
-    "bold", "bright", "calm", "cool", "deep", "fair", "fast", "fine",
-    "glad", "keen", "kind", "lean", "mild", "neat", "pure", "safe",
-    "slim", "soft", "tall", "warm", "wise", "grand", "swift", "vivid",
+    "bold",
+    "bright",
+    "calm",
+    "cool",
+    "deep",
+    "fair",
+    "fast",
+    "fine",
+    "glad",
+    "keen",
+    "kind",
+    "lean",
+    "mild",
+    "neat",
+    "pure",
+    "safe",
+    "slim",
+    "soft",
+    "tall",
+    "warm",
+    "wise",
+    "grand",
+    "swift",
+    "vivid",
 ]
 _NOUNS = [
-    "sketch", "draft", "spark", "bloom", "trail", "ridge", "creek", "grove",
-    "cliff", "cloud", "field", "forge", "frost", "haven", "pearl", "stone",
-    "storm", "river", "tower", "delta", "flame", "orbit", "pulse", "shore",
+    "sketch",
+    "draft",
+    "spark",
+    "bloom",
+    "trail",
+    "ridge",
+    "creek",
+    "grove",
+    "cliff",
+    "cloud",
+    "field",
+    "forge",
+    "frost",
+    "haven",
+    "pearl",
+    "stone",
+    "storm",
+    "river",
+    "tower",
+    "delta",
+    "flame",
+    "orbit",
+    "pulse",
+    "shore",
 ]
 
 
@@ -225,9 +327,7 @@ _PLAN_MODE_REENTRY_REMINDER = (
 )
 
 
-def build_plan_mode_reminder(
-    plan_path: str, plan_exists: bool, iteration: int
-) -> str:
+def build_plan_mode_reminder(plan_path: str, plan_exists: bool, iteration: int) -> str:
     """构建迭代感知的 Plan Mode system_reminder。
 
     - iteration 1: 完整提醒（5-phase workflow）
@@ -273,6 +373,7 @@ def build_plan_mode_reentry_reminder(plan_path: str, plan_exists: bool) -> str:
 
 
 # ── 兼容旧接口 ──────────────────────────────────────────────
+
 
 def plan_system_reminder() -> str:
     """简单的单次 Plan Mode 提醒（兼容旧代码）。"""

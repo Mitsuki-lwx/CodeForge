@@ -1,10 +1,8 @@
 """Tests for Tool abstract base class and validate_input."""
 
 import pytest
-from jsonschema import ValidationError
 
 from core.tool.context import ExecutionContext
-from core.tool.errors import ToolValidationError
 from core.tool.interface import Tool
 from core.tool.result import ToolResult
 

@@ -16,7 +16,7 @@ def test_dataset_items_well_formed(name, items):
 @pytest.mark.parametrize("name,items", DATASETS.items())
 def test_each_item_has_required_fields(name, items):
     for it in items:
-        assert it.get("name"), f"item 缺 name"
+        assert it.get("name"), "item 缺 name"
         assert it.get("task"), f"{it.get('name')} 缺 task"
         assert it.get("metric") in VALID_METRICS, (
             f"{it.get('name')} 的 metric 非法: {it.get('metric')}"

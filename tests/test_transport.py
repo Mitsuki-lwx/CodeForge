@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 import llm.transport as transport
 from llm.transport import RawResponse, post_stream
-
 
 # ── 模拟 httpx 流式响应：aclose 在 aiter_lines 未关闭时抛 "already running" ──
 

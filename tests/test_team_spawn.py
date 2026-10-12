@@ -70,7 +70,6 @@ async def test_spawn_teammate_inprocess(tmp_path, monkeypatch):
         lambda **kw: object(),
     )
 
-
     class _Registry:
         def list(self):
             return []
@@ -87,9 +86,13 @@ async def test_spawn_teammate_inprocess(tmp_path, monkeypatch):
     parent = _FakeParent()
 
     out = await spawn_teammate(
-        manager=mgr, parent_agent=parent, worktree_mgr=wt,
-        task_mgr=tm, name_reg=reg,
-        team_name="demo", member_name="alice",
+        manager=mgr,
+        parent_agent=parent,
+        worktree_mgr=wt,
+        task_mgr=tm,
+        name_reg=reg,
+        team_name="demo",
+        member_name="alice",
         prompt="echo hello > /tmp/x",
     )
     assert "alice" in out
@@ -112,9 +115,14 @@ async def test_spawn_unknown_team(tmp_path, monkeypatch):
     wt = _FakeWTMgr(str(tmp_path))
     with pytest.raises(TeamNotFoundError):
         await spawn_teammate(
-            manager=mgr, parent_agent=object(), worktree_mgr=wt,
-            task_mgr=_FakeTaskMgr(), name_reg=None,
-            team_name="nope", member_name="alice", prompt="x",
+            manager=mgr,
+            parent_agent=object(),
+            worktree_mgr=wt,
+            task_mgr=_FakeTaskMgr(),
+            name_reg=None,
+            team_name="nope",
+            member_name="alice",
+            prompt="x",
         )
 
 

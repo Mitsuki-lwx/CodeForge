@@ -64,8 +64,8 @@ class TeammateContext:
     read_unread: Callable[[], Awaitable[tuple[list[int], list[IncomingMessage]]]] = (
         lambda: _noop_read()
     )
-    mark_read: Callable[[list[int]], Awaitable[None]] = (
-        lambda indices: _noop_mark(indices)
+    mark_read: Callable[[list[int]], Awaitable[None]] = lambda indices: _noop_mark(
+        indices
     )
 
     # 定位当前 Team 的闭包。
@@ -91,6 +91,7 @@ async def _noop_read() -> tuple[list[int], list[IncomingMessage]]:
 
 async def _noop_mark(indices: list[int]) -> None:
     pass
+
 
 _CURRENT_TEAMMATE: contextvars.ContextVar[TeammateContext | None] = (
     contextvars.ContextVar("codeforge_teammate", default=None)

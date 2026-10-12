@@ -18,6 +18,7 @@ def _make():
 
 # ── 目标 ─────────────────────────────────────────────────────────
 
+
 def test_goal_set_get():
     _, s, _ = _make()
     assert s.get_goal() is None
@@ -28,6 +29,7 @@ def test_goal_set_get():
 
 
 # ── 待办 ─────────────────────────────────────────────────────────
+
 
 def test_todo_add_toggle():
     _, s, _ = _make()
@@ -40,6 +42,7 @@ def test_todo_add_toggle():
 
 
 # ── 约束 ─────────────────────────────────────────────────────────
+
 
 def test_constraint_session_default():
     _, s, _ = _make()
@@ -59,7 +62,9 @@ def test_constraint_persist_and_promote():
     )
     # 会话级再 promote 到 user
     s.add_constraint("别改 config")
-    slug = s.list_constraints()[0]["id"].replace("hard_constraint_", "").replace(".md", "")
+    slug = (
+        s.list_constraints()[0]["id"].replace("hard_constraint_", "").replace(".md", "")
+    )
     s.promote_constraint(slug, "user")
     assert any(
         i["body"] == "别改 config"
@@ -79,6 +84,7 @@ def test_constraint_never_default_persist():
 
 
 # ── 注入 ─────────────────────────────────────────────────────────
+
 
 def test_state_injection_blocks():
     """约束进 cached，目标+待办进 uncached（spec 缓存确定性）。"""
@@ -108,6 +114,9 @@ def test_state_not_in_conv_messages():
     conv.add_user_message("hello")
     api_msgs, _ = conv.to_api_format()
     # 状态文本不出现在对话消息里（它只出现在 PromptBuilder 的 assembly）
-    joined = "\n".join(getattr(m, "content", "") if isinstance(getattr(m, "content", ""), str) else "" for m in api_msgs)
+    joined = "\n".join(
+        getattr(m, "content", "") if isinstance(getattr(m, "content", ""), str) else ""
+        for m in api_msgs
+    )
     assert "别改 x" not in joined
     assert "修 bug" not in joined

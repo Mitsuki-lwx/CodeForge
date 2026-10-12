@@ -15,6 +15,7 @@ from tui.select import select_from_options
 _OPTIONS = [
     (HITLChoice.ALLOW_ONCE, "Allow this time"),
     (HITLChoice.ALLOW_SESSION, "Allow this session"),
+    (HITLChoice.ALLOW_SAVE, "Allow and save to project rules"),
     (HITLChoice.DENY, "Deny"),
 ]
 
@@ -42,7 +43,7 @@ def show_hitl_dialog(
         subtitle=subtitle,
         options=[label for _choice, label in _OPTIONS],
         hint="↑/↓ 选择，Enter 确认，Esc 拒绝",
-        cancel_index=2,  # 拒绝
+        cancel_index=3,  # 拒绝
     )
     choice = _OPTIONS[index][0]
     return HITLResponse(choice=choice, tool_name=request.tool_name)

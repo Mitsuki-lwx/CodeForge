@@ -66,7 +66,9 @@ async def test_send_message_resumes_stopped_inprocess(tmp_path):
         TeammateInfo(name="alice", agent_id="agent-a", backend_type="in-process"),
     ]
     sm = SendMessageTool(mgr, "demo", "lead", "lead")
-    res = await sm.execute(None, {"to": "alice", "message": "continue", "summary": "next task"})
+    res = await sm.execute(
+        None, {"to": "alice", "message": "continue", "summary": "next task"}
+    )
     assert res.success
     # 已 stop → 续派 + 置活跃
     assert task_mgr.resumed == [("alice", "continue")]

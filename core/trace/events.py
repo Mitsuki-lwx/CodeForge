@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
@@ -49,7 +49,14 @@ class _Base:
         data = asdict(self)
         out: dict[str, Any] = {"event": self.event}
         # 通用字段固定顺序;可选字段为空时省略
-        for key in ("session_id", "sequence", "ts", "duration_ms", "token", "parent_span_id"):
+        for key in (
+            "session_id",
+            "sequence",
+            "ts",
+            "duration_ms",
+            "token",
+            "parent_span_id",
+        ):
             val = data.get(key)
             if val is None or val == "":
                 continue
@@ -124,7 +131,9 @@ class HookEvent(_Base):
 class CompactEvent(_Base):
     """上下文压缩生命周期事件:前后 token 用量。"""
 
-    phase: str = "before_auto"  # before_auto/after_auto/before_emergency/after_emergency
+    phase: str = (
+        "before_auto"  # before_auto/after_auto/before_emergency/after_emergency
+    )
     before_tokens: int = 0
     after_tokens: int = 0
 
@@ -137,7 +146,9 @@ class CompactEvent(_Base):
 class AgentErrorEvent(_Base):
     """Agent 异常停止。"""
 
-    code: str = "unknown"  # max_iterations/unknown_tool/stream_error/cancelled/ptl_error
+    code: str = (
+        "unknown"  # max_iterations/unknown_tool/stream_error/cancelled/ptl_error
+    )
 
     @property
     def event(self) -> str:

@@ -153,9 +153,9 @@ class TestNoFalsePositive:
         """
         for t in ("不要执行计划", "不要写计划", "别执行 plan"):
             lowered = t.lower()
-            assert not any(
-                r in lowered for r in _REVERSALS
-            ), f"测试样本混入了 E3 反悔词：{t}"
+            assert not any(r in lowered for r in _REVERSALS), (
+                f"测试样本混入了 E3 反悔词：{t}"
+            )
             assert not detect_plan_intent(t)
 
 

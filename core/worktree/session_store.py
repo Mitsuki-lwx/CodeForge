@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 class WorktreeSession:
     """一个活跃 worktree 会话的记录。"""
 
-    name: str                          # 目录名（也用于匹配是否自动清理）
-    path: str                          # worktree 绝对路径
-    branch: str = ""                   # worktree 分支（展示/辅助决策用）
-    workDir: str = ""                  # 主仓库根
-    owner: str = "agent"               # agent / wf / user
-    createdAt: float = 0.0             # epoch seconds
+    name: str  # 目录名（也用于匹配是否自动清理）
+    path: str  # worktree 绝对路径
+    branch: str = ""  # worktree 分支（展示/辅助决策用）
+    workDir: str = ""  # 主仓库根
+    owner: str = "agent"  # agent / wf / user
+    createdAt: float = 0.0  # epoch seconds
 
 
 class SessionStore:

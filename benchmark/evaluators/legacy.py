@@ -25,7 +25,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 VALID_METRICS = {"contains", "exact", "regex", "pytest_pass"}
 
 
@@ -108,10 +107,18 @@ def score_item(item: dict, output: str, cwd: Path | None = None) -> dict[str, An
     if metric == "pytest_pass":
         comment = "pytest 全通过" if v else "pytest 有失败或未运行"
     elif metric == "contains":
-        comment = f"命中 expected_output={_match_target(item)!r}" if v else f"未命中 {_match_target(item)!r}"
+        comment = (
+            f"命中 expected_output={_match_target(item)!r}"
+            if v
+            else f"未命中 {_match_target(item)!r}"
+        )
     elif metric == "exact":
         comment = "完全一致" if v else "不一致"
     elif metric == "regex":
-        comment = f"命中正则 {_match_target(item)!r}" if v else f"未命中正则 {_match_target(item)!r}"
+        comment = (
+            f"命中正则 {_match_target(item)!r}"
+            if v
+            else f"未命中正则 {_match_target(item)!r}"
+        )
 
     return {"name": metric, "value": v, "comment": comment}

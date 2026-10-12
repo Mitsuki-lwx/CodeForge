@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 from conversation.history import check_alternating, filter_system
 from conversation.message import (
@@ -30,8 +30,8 @@ class ConversationManager:
     def __init__(
         self,
         system_prompt: str = "",
-        on_append: Optional[Callable[[Message], None]] = None,
-        on_replace: Optional[Callable[[list[Message]], None]] = None,
+        on_append: Callable[[Message], None] | None = None,
+        on_replace: Callable[[list[Message]], None] | None = None,
     ) -> None:
         self._system_prompt = system_prompt
         self._messages: list[Message] = []
@@ -56,8 +56,8 @@ class ConversationManager:
 
     def set_callbacks(
         self,
-        on_append: Optional[Callable[[Message], None]] = None,
-        on_replace: Optional[Callable[[list[Message]], None]] = None,
+        on_append: Callable[[Message], None] | None = None,
+        on_replace: Callable[[list[Message]], None] | None = None,
     ) -> None:
         """恢复会话后挂载存档回调（F22）。"""
         self._on_append = on_append
@@ -70,10 +70,6 @@ class ConversationManager:
     @system_prompt.setter
     def system_prompt(self, value: str) -> None:
         self._system_prompt = value
-
-    @property
-    def messages(self) -> list[Message]:
-        return list(self._messages)
 
     def add_message(self, role: MessageRole, content: str) -> Message:
         """添加一条内部消息并返回。"""
@@ -90,7 +86,9 @@ class ConversationManager:
         """便捷方法：添加助手消息。"""
         return self.add_message(MessageRole.ASSISTANT, content)
 
-    def add_tool_use(self, tool_use_id: str, name: str, input: dict[str, Any]) -> Message:
+    def add_tool_use(
+        self, tool_use_id: str, name: str, input: dict[str, Any]
+    ) -> Message:
         """添加一条工具调用消息（assistant 角色，含 tool_use 元数据）。"""
         msg = Message(
             role=MessageRole.ASSISTANT,
@@ -104,13 +102,23 @@ class ConversationManager:
         self._emit_append(msg)
         return msg
 
-    def add_tool_result(self, tool_use_id: str, content: str) -> Message:
-        """添加一条工具结果消息（user 角色）。"""
+    def add_tool_result(
+        self,
+        tool_use_id: str,
+        content: str,
+        images: list[dict[str, Any]] | None = None,
+    ) -> Message:
+        """添加一条工具结果消息（user 角色）。
+
+        `images` 是 `[{"media_type","data"}]` 形态的附件（见 `ToolResult.images`）；
+        默认 None = 纯文本，形状与改动前完全一致。
+        """
         msg = Message(
             role=MessageRole.USER,
             content=content,
             status=MessageStatus.COMPLETED,
             tool_use_id=tool_use_id,
+            images=list(images or []),
         )
         self._messages.append(msg)
         self._emit_append(msg)
@@ -126,7 +134,9 @@ class ConversationManager:
 
     def start_assistant_stream(self) -> Message:
         """创建一条流式中的助手消息，返回用于追加内容。"""
-        msg = Message(role=MessageRole.ASSISTANT, content="", status=MessageStatus.STREAMING)
+        msg = Message(
+            role=MessageRole.ASSISTANT, content="", status=MessageStatus.STREAMING
+        )
         self._messages.append(msg)
         return msg
 
@@ -142,7 +152,7 @@ class ConversationManager:
         """
         msg.reasoning += text
 
-    def finish_stream(self, msg: Message, usage: Optional[dict] = None) -> None:
+    def finish_stream(self, msg: Message, usage: dict | None = None) -> None:
         """标记流式消息为完成状态。"""
         msg.status = MessageStatus.COMPLETED
         if usage:
@@ -174,7 +184,9 @@ class ConversationManager:
                 api_messages.append(
                     APIMessage(
                         role=m.role.value,
-                        content=[make_tool_result_block(m.tool_use_id, m.content)],
+                        content=[
+                            make_tool_result_block(m.tool_use_id, m.content, m.images)
+                        ],
                     )
                 )
             elif m.tool_use_id and m.role == MessageRole.ASSISTANT:
@@ -183,7 +195,9 @@ class ConversationManager:
                 if m.content:
                     blocks.append(make_text_block(m.content))
                 if m.tool_name and m.tool_input is not None:
-                    blocks.append(make_tool_use_block(m.tool_use_id, m.tool_name, m.tool_input))
+                    blocks.append(
+                        make_tool_use_block(m.tool_use_id, m.tool_name, m.tool_input)
+                    )
                 api_messages.append(
                     APIMessage(
                         role=m.role.value,

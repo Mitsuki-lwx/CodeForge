@@ -5,7 +5,7 @@
 共性，不是 DeepSeek 特有。thinking/`reasoning_content` 回传由子类 openai_deepseek
 叠加。
 
-`_to_openai_wire` 与 `_normalize_usage` 保持为模块级函数，供客户端 re-export
+`_to_openai_wire` 与 `_normalize_usage` 是模块级纯函数，测试直接从这里导入
 兼容既有按名单测。
 """
 
@@ -130,6 +130,7 @@ def _to_openai_wire(m: APIMessage) -> list[dict]:
     text_blocks: list[dict] = []
     tool_calls: list[dict] = []
     tool_results: list[dict] = []  # role="tool" 消息
+    extra_user_messages: list[dict] = []  # 图像只能走 user 消息，见下
 
     for block in content:
         btype = block.get("type")
@@ -144,20 +145,50 @@ def _to_openai_wire(m: APIMessage) -> list[dict]:
                     "type": "function",
                     "function": {
                         "name": block.get("name", ""),
-                        "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
+                        "arguments": json.dumps(
+                            block.get("input", {}), ensure_ascii=False
+                        ),
                     },
                 }
             )
         elif btype == "tool_result":
-            raw = block.get("content", "")
-            content_str = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+            text, images = _split_tool_result_content(block.get("content", ""))
             tool_results.append(
-                {"role": "tool", "tool_call_id": block.get("tool_use_id", ""), "content": content_str}
+                {
+                    "role": "tool",
+                    "tool_call_id": block.get("tool_use_id", ""),
+                    "content": text,
+                }
             )
+            # ⚠️ OpenAI 的 `role=tool` 消息**只能放字符串**，图像必须另起一条
+            # user 消息带 `image_url`（data URI）。多张图合并进同一条，
+            # 免得一个工具结果展开成十几条消息。
+            if images:
+                image_parts: list[dict] = [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{img['media_type']};base64,{img['data']}"
+                        },
+                    }
+                    for img in images
+                ]
+                extra_user_messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "（工具附带的截图）",
+                            },
+                            *image_parts,
+                        ],
+                    }
+                )
 
     # 纯工具结果消息（role=user，仅含 tool_result 块）→ 可能展开成多条 tool 消息
     if tool_results and not tool_calls:
-        return tool_results
+        return tool_results + extra_user_messages
 
     # assistant（文本 + 工具调用）
     entry: dict = {"role": base_role, "content": text_blocks}
@@ -165,7 +196,41 @@ def _to_openai_wire(m: APIMessage) -> list[dict]:
         entry["tool_calls"] = tool_calls
     if base_role == "assistant" and reasoning:
         entry["reasoning_content"] = reasoning
-    return [entry]
+    return [entry] + extra_user_messages
+
+
+def _split_tool_result_content(raw: Any) -> tuple[str, list[dict[str, Any]]]:
+    """把 tool_result 的 content 拆成 (文本, 图像列表)。
+
+    content 可能是：
+      * 纯字符串（绝大多数工具）→ (原样, [])；
+      * 块数组 `[{type:text},{type:image,source:…}]`（带截图的工具）→ 拆开。
+    """
+    if isinstance(raw, bytes):
+        return raw.decode(errors="replace"), []
+    if isinstance(raw, str):
+        return raw, []
+    if not isinstance(raw, list):
+        return str(raw), []
+
+    parts: list[str] = []
+    images: list[dict[str, Any]] = []
+    for block in raw:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        if block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        elif block.get("type") == "image":
+            src = block.get("source") or {}
+            if src.get("data"):
+                images.append(
+                    {
+                        "media_type": src.get("media_type", "image/png"),
+                        "data": src["data"],
+                    }
+                )
+    return "\n".join(p for p in parts if p), images
 
 
 @register_adapter(
@@ -301,7 +366,3 @@ class OpenAIConversationAdapter(Adapter):
                     usage = chunk["usage"]
                     details = usage.get("prompt_tokens_details", {}) or {}
                     cached_tokens = details.get("cached_tokens", 0)
-
-
-# 兼容既有按名引用（原 llm.openai_client 导出同名模块内函数）
-OPENAI_DEFAULT_BASE_URL = DEFAULT_OPENAI_BASE_URL

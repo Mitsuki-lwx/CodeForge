@@ -23,9 +23,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from core.commands.ui import UI
 
-_USAGE = (
-    "Usage: /show [<轮次>] [--tail N] [--full] [--tools] [--cost]"
-)
+_USAGE = "Usage: /show [<轮次>] [--tail N] [--full] [--tools] [--cost]"
 
 
 async def handle_show(ui: UI, args: str = "") -> None:

@@ -10,10 +10,10 @@ import pytest
 # Add project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.mcp.client import MCPClient
-from core.mcp.pool import ConnectionPool
 from core.mcp.adapter import MCPToolAdapter
+from core.mcp.client import MCPClient
 from core.mcp.config import load_mcp_config
+from core.mcp.pool import ConnectionPool
 from core.mcp.transport.stdio import StdioTransport
 from core.mcp.types import JsonRpcRequest, JsonRpcResponse, parse_message
 from core.tool.context import ExecutionContext
@@ -74,6 +74,7 @@ class TestJsonRpcTypes:
         data = b'{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid"}}'
         msg = parse_message(data)
         from core.mcp.types import JsonRpcError
+
         assert isinstance(msg, JsonRpcError)
         assert msg.error["code"] == -32600
 
@@ -84,6 +85,7 @@ class TestJsonRpcTypes:
 
     def test_notification_serialize_no_id(self):
         from core.mcp.types import JsonRpcNotification
+
         notif = JsonRpcNotification(method="notifications/initialized")
         data = notif.serialize()
         assert b'"id"' not in data
@@ -117,6 +119,7 @@ class TestMCPClient:
 
     async def test_concurrent_calls(self, mcp_client):
         """并发调用：多个请求按 id 正确匹配。"""
+
         async def call_add(a, b):
             return await mcp_client.call_tool("add", {"a": a, "b": b})
 
@@ -225,14 +228,18 @@ class TestMCPConfig:
 
     def test_load_stdio_server(self, tmp_path):
         path = tmp_path / "mcp.json"
-        path.write_text(json.dumps({
-            "mcpServers": {
-                "test-srv": {
-                    "command": "python",
-                    "args": ["-c", "print('hello')"],
+        path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-srv": {
+                            "command": "python",
+                            "args": ["-c", "print('hello')"],
+                        }
+                    }
                 }
-            }
-        }))
+            )
+        )
         configs = load_mcp_config(path)
         assert len(configs) == 1
         assert configs[0]["name"] == "test-srv"
@@ -241,28 +248,86 @@ class TestMCPConfig:
 
     def test_load_http_server(self, tmp_path):
         path = tmp_path / "mcp.json"
-        path.write_text(json.dumps({
-            "mcpServers": {
-                "web": {
-                    "type": "streamableHttp",
-                    "url": "https://example.com/mcp",
-                    "headers": {"Auth": "token"},
+        path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "web": {
+                            "type": "streamableHttp",
+                            "url": "https://example.com/mcp",
+                            "headers": {"Auth": "token"},
+                        }
+                    }
                 }
-            }
-        }))
+            )
+        )
         configs = load_mcp_config(path)
         assert len(configs) == 1
         assert configs[0]["url"] == "https://example.com/mcp"
 
     def test_skip_invalid(self, tmp_path):
         path = tmp_path / "mcp.json"
-        path.write_text(json.dumps({
-            "mcpServers": {
-                "ok": {"command": "ls"},
-                "bad": {},  # missing command
-                "bad2": "not-an-object",
-            }
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "ok": {"command": "ls"},
+                        "bad": {},  # missing command
+                        "bad2": "not-an-object",
+                    }
+                }
+            )
+        )
         configs = load_mcp_config(path)
         assert len(configs) == 1
         assert configs[0]["name"] == "ok"
+
+
+# ── 只读判定：按服务端自述的 annotations（修的是一个 fail-open）──────
+
+
+class TestMCPReadOnlyInference:
+    """`is_read_only()` 曾经**无条件返回 True**，于是每个 MCP 工具都被
+    `normalize_tool_category("mcp", True)` 归成 `read` 档 → Layer 1 直接放行，
+    连审批都不进。等于"挂一个 MCP server = 无条件授权它全部工具"。
+
+    现在按 MCP 规范的 `annotations.readOnlyHint` 判；**没声明就算非只读**。
+    """
+
+    def _adapter(self, annotations=None):
+        defn = {"name": "t", "description": "d", "inputSchema": {}}
+        if annotations is not None:
+            defn["annotations"] = annotations
+        return MCPToolAdapter(object(), defn, "srv")
+
+    def test_declared_read_only_is_read_only(self):
+        assert self._adapter({"readOnlyHint": True}).is_read_only() is True
+
+    def test_missing_annotation_is_not_read_only(self):
+        """★ 没声明 → 非只读（走 command 档，要过审批）。"""
+        assert self._adapter().is_read_only() is False
+
+    def test_explicit_false_is_not_read_only(self):
+        assert self._adapter({"readOnlyHint": False}).is_read_only() is False
+
+    def test_malformed_annotations_do_not_crash(self):
+        assert self._adapter("not-a-dict").is_read_only() is False
+
+    def test_destructive_hint(self):
+        assert self._adapter({"destructiveHint": True}).is_destructive() is True
+        assert self._adapter({}).is_destructive() is False
+
+    def test_concurrency_follows_read_only(self):
+        """并发安全跟着只读走 —— 非只读的 MCP 工具必须串行（否则互相改状态）。"""
+        assert self._adapter({"readOnlyHint": True}).is_concurrency_safe({}) is True
+        assert self._adapter({}).is_concurrency_safe({}) is False
+
+    def test_category_still_mcp(self):
+        """category 不变 —— 由 `normalize_tool_category` 按只读与否分流。"""
+        from core.agent.tool_category import normalize_tool_category
+
+        a = self._adapter({"readOnlyHint": True})
+        b = self._adapter()
+        assert a.category() == b.category() == "mcp"
+        assert normalize_tool_category(a.category(), a.is_read_only()) == "read"
+        assert normalize_tool_category(b.category(), b.is_read_only()) == "command"

@@ -265,9 +265,7 @@ async def test_end_to_end_read_only_crash_is_safe(tmp_path):
 @pytest.mark.parametrize("tid", ["t1", "t2"])
 def test_pending_preserves_journal_order(tmp_path, tid):
     _journal_with(tmp_path, ["t1", "t2"])
-    pending = find_pending_confirmations(
-        tmp_path, [_tool_use("t1"), _tool_use("t2")]
-    )
+    pending = find_pending_confirmations(tmp_path, [_tool_use("t1"), _tool_use("t2")])
     assert [p.tool_use_id for p in pending] == ["t1", "t2"]
 
 

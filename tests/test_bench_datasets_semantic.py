@@ -7,7 +7,6 @@ from pathlib import Path
 from benchmark.datasets import get_dataset
 from benchmark.evaluators.semantic import evaluate_semantic
 
-
 SMOKE = get_dataset("smoke")
 
 
@@ -40,25 +39,34 @@ def test_city_distance_correct_impl_passes(tmp_path: Path):
 
 def test_city_distance_wrong_euclidean_fails(tmp_path: Path):
     # 欧氏距离：能给出「数值」但不是大圆距离 → 语义必须判错（文本像但不对）
-    _write_module(tmp_path, "distance.py",
-                  "import math\ndef haversine(lat1, lon1, lat2, lon2):\n"
-                  "    return math.sqrt((lat1-lat2)**2 + (lon1-lon2)**2)\n")
+    _write_module(
+        tmp_path,
+        "distance.py",
+        "import math\ndef haversine(lat1, lon1, lat2, lon2):\n"
+        "    return math.sqrt((lat1-lat2)**2 + (lon1-lon2)**2)\n",
+    )
     res = evaluate_semantic(_item("city_distance"), "ok", str(tmp_path))
     # 欧氏在 B→SH 大圆 1067 上严重失配（文本像但语义错）→ 必须 <1.0（抓到）
     assert res["value"] < 1.0, res["comment"]
 
 
 def test_schedule_overlap_correct_passes(tmp_path: Path):
-    _write_module(tmp_path, "overlap.py",
-                  "def overlap(a0,a1,b0,b1):\n    return a0 < b1 and b0 < a1\n")
+    _write_module(
+        tmp_path,
+        "overlap.py",
+        "def overlap(a0,a1,b0,b1):\n    return a0 < b1 and b0 < a1\n",
+    )
     res = evaluate_semantic(_item("schedule_overlap"), "ok", str(tmp_path))
     assert res["value"] == 1.0, res["comment"]
 
 
 def test_schedule_overlap_wrong_boundary_fails(tmp_path: Path):
     # 用闭区间判断会误判半开相邻不重叠 [1,5)[5,9) 与空区间 → 语义必须判错
-    _write_module(tmp_path, "overlap.py",
-                  "def overlap(a0,a1,b0,b1):\n    return a0 <= b1 and b0 <= a1\n")
+    _write_module(
+        tmp_path,
+        "overlap.py",
+        "def overlap(a0,a1,b0,b1):\n    return a0 <= b1 and b0 <= a1\n",
+    )
     res = evaluate_semantic(_item("schedule_overlap"), "ok", str(tmp_path))
     assert res["value"] < 1.0, res["comment"]
 

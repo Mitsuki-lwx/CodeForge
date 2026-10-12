@@ -29,16 +29,21 @@ class _Client:
 
 def _agent() -> Agent:
     return Agent(
-        registry=__import__("core.tool.registry", fromlist=["ToolRegistry"]).ToolRegistry(),
+        registry=__import__(
+            "core.tool.registry", fromlist=["ToolRegistry"]
+        ).ToolRegistry(),
         llm_client=_Client(),
         exec_ctx=ExecutionContext(cwd=Path(tempfile.mkdtemp()), session_id="main"),
         conversation=ConversationManager(),
         config=AgentConfig(max_iterations=3),
-        runtime=__import__("core.agent.runtime", fromlist=["SessionRuntime"]).SessionRuntime(),
+        runtime=__import__(
+            "core.agent.runtime", fromlist=["SessionRuntime"]
+        ).SessionRuntime(),
     )
 
 
 # ── Agent.switch_model ─────────────────────────────────────────────
+
 
 def test_switch_model_changes_client_window_and_keeps_conv(monkeypatch):
     import llm.client as client_mod
@@ -67,6 +72,7 @@ def test_switch_model_updates_prompt_builder_model(monkeypatch):
 
 
 # ── /model 命令 ────────────────────────────────────────────────────
+
 
 async def test_model_command_switch(monkeypatch):
     import core.commands.builtin_model as model_mod
@@ -126,6 +132,7 @@ async def test_model_command_cancel_keeps_current(monkeypatch):
 
 # ── 子 agent 用新模型 ──────────────────────────────────────────────
 
+
 def test_subagent_uses_parent_client_after_switch(monkeypatch):
     import llm.client as client_mod
 
@@ -153,7 +160,9 @@ async def test_model_command_cheap_disables_router_hint(monkeypatch):
 
     printed = []
     providers = [
-        ProviderConfig(name="cheap", protocol="anthropic", model="m", api_key="k", tier="cheap"),
+        ProviderConfig(
+            name="cheap", protocol="anthropic", model="m", api_key="k", tier="cheap"
+        ),
         ProviderConfig(name="main", protocol="anthropic", model="m", api_key="k"),
     ]
 
@@ -185,7 +194,9 @@ async def test_model_command_non_cheap_no_hint(monkeypatch):
 
     printed = []
     providers = [
-        ProviderConfig(name="cheap", protocol="anthropic", model="m", api_key="k", tier="cheap"),
+        ProviderConfig(
+            name="cheap", protocol="anthropic", model="m", api_key="k", tier="cheap"
+        ),
         ProviderConfig(name="main", protocol="anthropic", model="m", api_key="k"),
     ]
 

@@ -94,7 +94,7 @@ class TestPreviewWindow:
         这是放宽 `result_preview_max_chars` 的前提。将来若有人把两者"统一"，
         本测试会挡住那次改动。
         """
-        from tui.app import _short_preview
+        from tui.render import _short_preview
 
         long_out = "env dump:\n" + "x" * 5000
         # 显示只取首行，且长度上限 60 —— 与落盘窗口(2000)毫无关系
@@ -172,8 +172,9 @@ class TestDroppedAfterClose:
     def test_drop_is_logged_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
-        with tempfile.TemporaryDirectory() as td, caplog.at_level(
-            logging.DEBUG, logger="core.trace.writer"
+        with (
+            tempfile.TemporaryDirectory() as td,
+            caplog.at_level(logging.DEBUG, logger="core.trace.writer"),
         ):
             w = TraceWriter("s1", audit_dir=td)
             w.close()
@@ -213,9 +214,7 @@ class TestRoundRoleRobustness:
     def test_enum_role_still_works(self) -> None:
         from conversation.message import Message, MessageRole
 
-        msgs = [
-            Message(role=MessageRole.USER, content=f"第{i}轮") for i in range(3)
-        ]
+        msgs = [Message(role=MessageRole.USER, content=f"第{i}轮") for i in range(3)]
         assert len(split_rounds(msgs)) == 3
 
     def test_both_shapes_give_same_rounds(self) -> None:

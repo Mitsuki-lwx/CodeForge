@@ -37,9 +37,7 @@ def _tool_names(registry) -> set[str]:
 
 async def _build(workspace: Path, **kwargs):
     """装配一个会话；调用方负责 close。"""
-    return await build_session(
-        provider=_provider(), workspace=workspace, **kwargs
-    )
+    return await build_session(provider=_provider(), workspace=workspace, **kwargs)
 
 
 # ── 核心：恢复与新建的能力集一致 ──────────────────────────────────
@@ -182,20 +180,39 @@ async def test_agent_identity_is_main_on_both_paths(tmp_path):
 # ── 无头模式 ──────────────────────────────────────────────────────
 
 
-async def test_headless_sets_dont_ask(tmp_path):
-    """无头模式放行 ask 级决策（与既有 --task 行为一致）。"""
+async def test_headless_defaults_to_deny_all_policy(tmp_path):
+    """无头模式默认取**最保守**的 deny_all（不再是"一律放行"）。
+
+    旧实现是 `_dont_ask=True`（每个 ask → allow），等于 `--task` 零审批执行
+    任意命令/写任意文件。现在无头默认只读，放开必须显式传策略。
+    """
+    from core.permissions.modes import UnattendedPolicy
+
     bundle = await _build(tmp_path, headless=True)
     try:
-        assert bundle.agent._dont_ask is True
+        assert bundle.agent.unattended_policy is UnattendedPolicy.DENY_ALL
+        assert bundle.agent._dont_ask is False
+    finally:
+        bundle.close()
+
+
+async def test_headless_honours_explicit_policy(tmp_path):
+    """显式策略优先于 headless 的默认档。"""
+    from core.permissions.modes import UnattendedPolicy
+
+    bundle = await _build(tmp_path, headless=True, unattended_policy="allow_write")
+    try:
+        assert bundle.agent.unattended_policy is UnattendedPolicy.ALLOW_WRITE
     finally:
         bundle.close()
 
 
 async def test_interactive_does_not_set_dont_ask(tmp_path):
-    """交互模式不设 dont_ask —— HITL 弹窗必须保留。"""
+    """交互模式不设 dont_ask、也不设策略 —— HITL 弹窗必须保留。"""
     bundle = await _build(tmp_path, headless=False)
     try:
         assert bundle.agent._dont_ask is False
+        assert bundle.agent.unattended_policy is None
     finally:
         bundle.close()
 

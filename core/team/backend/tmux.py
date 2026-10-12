@@ -55,14 +55,23 @@ class TmuxBackend:
         if os.environ.get("TMUX"):
             # 当前在 tmux 会话内：横向 split，-P 打印 pane id，-F 指定格式
             args = [
-                self._tmux, "split-window", "-h", "-P", "-F", "#{pane_id}",
-                "--", quoted_cmd,
+                self._tmux,
+                "split-window",
+                "-h",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                quoted_cmd,
             ]
         else:
             # 在 tmux 会话外：detached 新会话
             args = [
-                self._tmux, "new-session", "-d",
-                "--", quoted_cmd,
+                self._tmux,
+                "new-session",
+                "-d",
+                "--",
+                quoted_cmd,
             ]
 
         proc = await asyncio.create_subprocess_exec(
@@ -84,7 +93,12 @@ class TmuxBackend:
         if not pane_id:
             return
         proc = await asyncio.create_subprocess_exec(
-            self._tmux, "send-keys", "-t", pane_id, "", "Enter",
+            self._tmux,
+            "send-keys",
+            "-t",
+            pane_id,
+            "",
+            "Enter",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -95,7 +109,10 @@ class TmuxBackend:
         if not pane_id:
             return
         proc = await asyncio.create_subprocess_exec(
-            self._tmux, "kill-pane", "-t", pane_id,
+            self._tmux,
+            "kill-pane",
+            "-t",
+            pane_id,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )

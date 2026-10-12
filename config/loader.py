@@ -145,7 +145,9 @@ def load_config(path: str | Path = "config.yaml") -> list[ProviderConfig]:
     return _validate_providers(providers_raw)
 
 
-def load_config_full(path: str | Path = "config.yaml") -> tuple[list[ProviderConfig], object]:
+def load_config_full(
+    path: str | Path = "config.yaml",
+) -> tuple[list[ProviderConfig], object]:
     """加载配置并返回 (providers, features)。
 
     与 load_config 兼容（保持既有调用 `load_config` 返回 providers 列表不变），
@@ -154,7 +156,6 @@ def load_config_full(path: str | Path = "config.yaml") -> tuple[list[ProviderCon
     config_path = Path(path)
     if not config_path.exists():
         return load_config(path), _default_features()
-
 
     try:
         data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -185,6 +186,13 @@ def load_config_full(path: str | Path = "config.yaml") -> tuple[list[ProviderCon
         raw_review = raw_features.get("approval_review", None)
         if isinstance(raw_review, dict):
             features.approval_review = _parse_approval_review_config(raw_review)
+        raw_mcp = raw_features.get("mcp", None)
+        if isinstance(raw_mcp, dict):
+            from config.model import McpConfig
+
+            features.mcp = McpConfig(
+                trust_project=bool(raw_mcp.get("trust_project", False)),
+            )
     return providers, features
 
 
@@ -213,7 +221,10 @@ def _parse_host_config(raw: dict) -> object:
     try:
         port = int(raw.get("port", 0) or 0)
     except (TypeError, ValueError):
-        print("警告：features.host.port 不是整数，已按 0（随机端口）处理。", file=sys.stderr)
+        print(
+            "警告：features.host.port 不是整数，已按 0（随机端口）处理。",
+            file=sys.stderr,
+        )
         port = 0
     if not 0 <= port <= 65535:
         print(

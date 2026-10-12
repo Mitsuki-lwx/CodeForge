@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class MessageRole(str, Enum):
@@ -30,22 +30,31 @@ class MessageStatus(str, Enum):
 @dataclass
 class Message:
     """内部消息模型，含完整元数据。"""
+
     role: MessageRole
     content: str
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     status: MessageStatus = MessageStatus.PENDING
     timestamp: float = field(default_factory=time.time)
-    usage: Optional[dict[str, Any]] = None
+    usage: dict[str, Any] | None = None
     # 工具调用相关
-    tool_use_id: Optional[str] = None
-    tool_name: Optional[str] = None
-    tool_input: Optional[dict[str, Any]] = None
+    tool_use_id: str | None = None
+    tool_name: str | None = None
+    tool_input: dict[str, Any] | None = None
     # 思考内容（thinking mode 需在工具调用轮回传给 DeepSeek 等端点）
     reasoning: str = ""
+    # 工具结果的图像附件（`browser_screenshot` 用）。
+    #
+    # ⚠️ 刻意**不落盘**：`core/archive/writer.py` 只序列化白名单字段，图像不在其中
+    # —— 几百 KB 的 base64 写进会话 JSONL 会把历史文件撑爆。恢复会话后图像丢失，
+    # 这是有意的取舍（模型看的是当轮，人看的是磁盘上的 PNG）。
+    images: list[dict[str, Any]] = field(default_factory=list)
 
     def to_api(self) -> APIMessage:
         """转为 API 层消息（仅 role + content）。"""
-        return APIMessage(role=self.role.value, content=self.content, reasoning=self.reasoning)
+        return APIMessage(
+            role=self.role.value, content=self.content, reasoning=self.reasoning
+        )
 
 
 @dataclass
@@ -56,6 +65,7 @@ class APIMessage:
     reasoning 为思考文本（thinking mode），协议客户端按各自 wire format
     决定如何回传（OpenAI/DeepSeek 放到顶层 reasoning_content）。
     """
+
     role: str
     content: str | list[dict[str, Any]]
     reasoning: str = ""
@@ -71,6 +81,35 @@ def make_tool_use_block(id: str, name: str, input: dict[str, Any]) -> dict[str, 
     return {"type": "tool_use", "id": id, "name": name, "input": input}
 
 
-def make_tool_result_block(tool_use_id: str, content: str) -> dict[str, Any]:
-    """创建工具结果内容块。"""
-    return {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+def make_image_block(media_type: str, data_b64: str) -> dict[str, Any]:
+    """创建图像内容块（Anthropic 形态）。
+
+    两个协议都用这个内部形态，由各自的适配器翻译：
+    Anthropic 原样透传；OpenAI 转成 `image_url` 的 data URI（且**不能**放在
+    `role=tool` 消息里，见 `llm/adapters/openai_base.py`）。
+    """
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": data_b64},
+    }
+
+
+def make_tool_result_block(
+    tool_use_id: str,
+    content: str,
+    images: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """创建工具结果内容块。
+
+    有图像时 `content` 必须是**块数组**（Anthropic 要求）：
+    `[{type:text}, {type:image}, …]`。没有图像时保持原来的纯字符串形态 ——
+    那是绝大多数工具结果的路径，不该被这条新能力改变形状。
+    """
+    if not images:
+        return {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+    blocks: list[dict[str, Any]] = []
+    if content:
+        blocks.append({"type": "text", "text": content})
+    for img in images:
+        blocks.append(make_image_block(img["media_type"], img["data"]))
+    return {"type": "tool_result", "tool_use_id": tool_use_id, "content": blocks}

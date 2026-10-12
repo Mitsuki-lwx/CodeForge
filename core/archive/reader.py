@@ -106,9 +106,7 @@ def read_messages(jsonl: Path) -> tuple[list[Message], int, float]:
 
 def _is_tool_use_msg(m: Message) -> bool:
     """是否是「assistant 发起工具调用」的消息。"""
-    return bool(
-        m.role == MessageRole.ASSISTANT and m.tool_name and m.tool_use_id
-    )
+    return bool(m.role == MessageRole.ASSISTANT and m.tool_name and m.tool_use_id)
 
 
 def _unpaired_tool_use_indices(msgs: list[Message]) -> list[int]:
@@ -143,9 +141,7 @@ def read_unpaired_tool_uses(session_dir: str | Path) -> list[Message]:
     恢复语义的入口：把返回值交给 `core.host.recovery.find_pending_confirmations()`，
     就能交叉出「可能已经生效但结果没落盘」的副作用调用。
     """
-    msgs, _skipped, _ts = read_messages(
-        Path(session_dir) / CONVERSATION_FILENAME
-    )
+    msgs, _skipped, _ts = read_messages(Path(session_dir) / CONVERSATION_FILENAME)
     return [msgs[i] for i in _unpaired_tool_use_indices(msgs)]
 
 

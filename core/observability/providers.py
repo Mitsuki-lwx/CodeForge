@@ -74,7 +74,9 @@ def record_histogram(name: str, value: float, *, unit: str = "1") -> None:
     h = _histograms.get(name)
     if h is None:
         try:
-            h = meter.create_histogram(name, description="codeforge histogram", unit=unit)
+            h = meter.create_histogram(
+                name, description="codeforge histogram", unit=unit
+            )
             _histograms[name] = h
         except Exception:  # noqa: BLE001
             return
@@ -91,10 +93,12 @@ def snapshot() -> dict[str, float]:
 
 # ── no-op 桩 ──
 
+
 class _NullMeter:
     def __getattr__(self, name: str):
         def _noop(*a, **k):
             return self
+
         return _noop
 
 

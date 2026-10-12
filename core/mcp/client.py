@@ -82,7 +82,7 @@ class MCPClient:
             self._receive_task.cancel()
             self._receive_task = None
         # Cancel 所有 pending futures
-        for fid, future in self._pending.items():
+        for _fid, future in self._pending.items():
             if not future.done():
                 future.set_exception(ConnectionError("MCP connection closed"))
         self._pending.clear()
@@ -103,9 +103,9 @@ class MCPClient:
 
         try:
             return await asyncio.wait_for(future, timeout=60.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(req_id, None)
-            raise TimeoutError(f"MCP call '{method}' timed out after 60s")
+            raise TimeoutError(f"MCP call '{method}' timed out after 60s") from None
 
     async def _send_notification(self, method: str, params: dict) -> None:
         """发送 JSON-RPC 通知（无 id，不等待响应）。"""
@@ -141,11 +141,13 @@ class MCPClient:
                     logger.debug("MCP transport closed for %s", self.server_name)
                     break
                 except Exception:
-                    logger.debug("MCP receive error for %s", self.server_name, exc_info=True)
+                    logger.debug(
+                        "MCP receive error for %s", self.server_name, exc_info=True
+                    )
         finally:
             # 连接断开 → 取消所有等待中的请求
             self._connected = False
-            for fid, future in list(self._pending.items()):
+            for _fid, future in list(self._pending.items()):
                 if not future.done():
                     future.set_exception(
                         ConnectionError(f"MCP connection closed for {self.server_name}")

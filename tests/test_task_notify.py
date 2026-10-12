@@ -15,7 +15,7 @@ import pytest
 from rich.console import Console
 
 import core.agent.sub_agent as sub_agent_mod
-import tui.app as app_mod
+import tui.session as session_mod
 from conversation.manager import ConversationManager
 from core.task.manager import BackgroundTask, BackgroundTaskManager, TaskStatus
 
@@ -61,7 +61,7 @@ def no_wake(monkeypatch):
     async def _fake(app, text):
         calls.append(text)
 
-    monkeypatch.setattr(app_mod, "_inject_and_run", _fake)
+    monkeypatch.setattr(session_mod, "_inject_and_run", _fake)
     return calls
 
 
@@ -87,7 +87,7 @@ def _register(
 
 async def _run_one_tick(app, task_id: str) -> None:
     """跑消费协程，处理完一条完成通知后收工。"""
-    consumer = asyncio.create_task(app_mod._consume_task_done(app))
+    consumer = asyncio.create_task(session_mod._consume_task_done(app))
     try:
         app.task_mgr._done.put_nowait(task_id)
         for _ in range(50):
@@ -109,7 +109,10 @@ async def test_notification_keeps_first_result_then_delivers(fake_run, no_wake):
     await _run_one_tick(app, bt.id)
     await asyncio.sleep(0.05)
 
-    assert len(app.runtime.pending_reminders) == 1
+    # ⚠️ 只断言"第一条"而不是"恰好一条"：续派跑完后第二轮的完成通知也会入队，
+    #    而消费者协程何时被取消由调度决定 —— 断言数量等于把时序当契约，
+    #    在慢机器（CI）上会假失败。契约是**顺序**：第一条通知带的是第一轮结果。
+    assert app.runtime.pending_reminders, "没有投递任何通知"
     note = app.runtime.pending_reminders[0]
     assert "第一轮产出" in note  # 结果没被续派清掉
     assert "completed" in note

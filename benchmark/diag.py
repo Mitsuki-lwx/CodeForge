@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -75,10 +74,14 @@ def analyze_trace(spans: list[dict[str, Any]]) -> dict[str, Any]:
     tool_dur = [s.get("attributes", {}).get("duration_ms", 0) for s in tools]
     tool_dur = [d for d in tool_dur if isinstance(d, (int, float))]
     retries = sum(
-        1 for s in tools if (s.get("attributes") or {}).get("codeforge.tool.retries", 0) > 0
+        1
+        for s in tools
+        if (s.get("attributes") or {}).get("codeforge.tool.retries", 0) > 0
     )
     timeouts = sum(
-        1 for s in tools if (s.get("attributes") or {}).get("codeforge.tool.timeout") is True
+        1
+        for s in tools
+        if (s.get("attributes") or {}).get("codeforge.tool.timeout") is True
     )
     errors = sum(1 for s in tools if s.get("status") in (2, "ERROR"))
     # 循环层
@@ -92,7 +95,8 @@ def analyze_trace(spans: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     ctx_chars = [c for c in ctx_chars if c is not None]
     out_toks = [
-        (s.get("attributes") or {}).get("gen_ai.usage.output_tokens", None) for s in gens
+        (s.get("attributes") or {}).get("gen_ai.usage.output_tokens", None)
+        for s in gens
     ]
     out_toks = [t for t in out_toks if t is not None]
 
@@ -116,13 +120,15 @@ def analyze_trace(spans: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def print_report(groups: dict[str, list[dict[str, Any]]], trace_filter: str | None) -> None:
+def print_report(
+    groups: dict[str, list[dict[str, Any]]], trace_filter: str | None
+) -> None:
     from rich.console import Console
     from rich.table import Table
 
     console = Console()
     rows = []
-    for tid, spans in groups.items():
+    for _tid, spans in groups.items():
         if not any(_bench_root(s) for s in spans):
             continue
         r = analyze_trace(spans)
@@ -132,7 +138,9 @@ def print_report(groups: dict[str, list[dict[str, Any]]], trace_filter: str | No
     rows.sort(key=lambda r: r.get("iterations", 0), reverse=True)
 
     if not rows:
-        console.print("[yellow]没有找到 bench:* 根 trace。先跑一次 benchmark 再诊断。[/yellow]")
+        console.print(
+            "[yellow]没有找到 bench:* 根 trace。先跑一次 benchmark 再诊断。[/yellow]"
+        )
         return
 
     table = Table(title="CodeForge 瓶颈层级诊断")
@@ -167,18 +175,26 @@ def print_report(groups: dict[str, list[dict[str, Any]]], trace_filter: str | No
 
     # 总结每条的瓶颈读数
     for r in rows:
-        console.print(f"\n[bold cyan]{r['name']}[/bold cyan] (iters={r['iterations']}, "
-                      f"tools={r['tool_count']}ms={r['tool_total_ms']}, "
-                      f"retry={r['tool_retries']}, timeout={r['tool_timeouts']}, "
-                      f"err={r['tool_errors']})")
+        console.print(
+            f"\n[bold cyan]{r['name']}[/bold cyan] (iters={r['iterations']}, "
+            f"tools={r['tool_count']}ms={r['tool_total_ms']}, "
+            f"retry={r['tool_retries']}, timeout={r['tool_timeouts']}, "
+            f"err={r['tool_errors']})"
+        )
         if r["ctx_start_chars"] is not None:
-            console.print(f"  context字符: {r['ctx_start_chars']} -> {r['ctx_end_chars']} "
-                          f"(增速 {r['ctx_growth_chars']})")
+            console.print(
+                f"  context字符: {r['ctx_start_chars']} -> {r['ctx_end_chars']} "
+                f"(增速 {r['ctx_growth_chars']})"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="codeforge-diag", description="读本地 JSONL 诊断瓶颈层级")
-    p.add_argument("--obs-dir", default=str(_DEFAULT_OBS), help="obs 目录(默认 ~/.codeforge/obs)")
+    p = argparse.ArgumentParser(
+        prog="codeforge-diag", description="读本地 JSONL 诊断瓶颈层级"
+    )
+    p.add_argument(
+        "--obs-dir", default=str(_DEFAULT_OBS), help="obs 目录(默认 ~/.codeforge/obs)"
+    )
     p.add_argument("--trace", default=None, help="只看某个 trace_id")
     args = p.parse_args(argv)
 

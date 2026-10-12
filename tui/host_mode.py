@@ -21,7 +21,7 @@ TUI **完全不装配会话**，一切都走控制通道。
 这里只保留 `/quit`、`/status`、`/help`，其余明确回一句「host 模式下不可用」并指向
 `features.host.enabled=false`——静默失效比明确不支持更糟。
 
-渲染复用 `tui.app._StreamRenderer`，不重写一份流式渲染：它要的四个回调都能从事件帧
+渲染复用 `tui.render._StreamRenderer`，不重写一份流式渲染：它要的四个回调都能从事件帧
 的 `data` 里直接取到，因为 `protocol.event_frame` 用 `to_jsonable` 把 dataclass 按
 字段名展开了。跨模块用私有名不是疏忽——`tests/test_tui_stall.py` 已经这么用，而重写
 一份渲染器意味着两处会各自漂移。
@@ -165,9 +165,7 @@ def _render_frame(renderer: Any, console: Console, name: str, data: dict) -> boo
         )
         return True
     elif name == "AgentError":
-        console.print(
-            f"\n[red]回合出错：{data.get('message') or data.get('code')}[/]"
-        )
+        console.print(f"\n[red]回合出错：{data.get('message') or data.get('code')}[/]")
         return True
     elif name == "HostError":
         console.print(f"\n[red]host 回合失败：{data.get('message')}[/]")
@@ -200,7 +198,7 @@ async def _drain_turn(console: Console, client: HostClient, expected: int) -> bo
     简单地"看到第一个结束帧就收工"：连上时如果 host 正在跑别人的回合，第一个结束帧属于
     那个回合，提前收工会把我们的回复丢在后面没人渲染。
     """
-    from tui.app import _spinner, _StreamRenderer
+    from tui.render import _spinner, _StreamRenderer
 
     spinner = asyncio.create_task(_spinner(sys.stdout))
     renderer = _StreamRenderer(console, spinner)

@@ -107,7 +107,10 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b")),
     ("stripe_webhook", re.compile(r"\bwhsec_[A-Za-z0-9]{16,}\b")),
     ("huggingface", re.compile(r"\bhf_[A-Za-z0-9]{24,}\b")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]+")),
+    (
+        "jwt",
+        re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]+"),
+    ),
     # 组 1 = 凭据部分（门槛只看它，不看 `Bearer ` 前缀）
     ("bearer_token", re.compile(r"[Bb]earer\s+([A-Za-z0-9_\-.=]{20,})")),
     (
@@ -274,7 +277,9 @@ def redaction_config() -> RedactionSettings:
     except Exception as e:  # noqa: BLE001 —— 配置读不到就用默认值，绝不阻断
         # 静默兜底是刻意的（脱敏开关不能因为配置文件坏掉就让主流程崩），
         # 但要留痕：否则"为什么没生效"将无从排查。
-        logger.debug("redaction config unreadable, using default (enabled=%s): %s", enabled, e)
+        logger.debug(
+            "redaction config unreadable, using default (enabled=%s): %s", enabled, e
+        )
     return RedactionSettings(enabled=enabled)
 
 

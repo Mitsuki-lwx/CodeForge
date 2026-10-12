@@ -66,16 +66,20 @@ class AgentRole:
 
     name: str = ""
     description: str = ""
-    tools: list[str] = field(default_factory=list)          # frontmatter.tools 白名单
-    disallowed_tools: list[str] = field(default_factory=list)  # frontmatter.disallowedTools
-    model: str = "inherit"  # 'inherit' 或具体模型名；保留别名需 provider 配 model_aliases
-    max_turns: int = 0                                        # 0 = 沿用全局默认
+    tools: list[str] = field(default_factory=list)  # frontmatter.tools 白名单
+    disallowed_tools: list[str] = field(
+        default_factory=list
+    )  # frontmatter.disallowedTools
+    model: str = (
+        "inherit"  # 'inherit' 或具体模型名；保留别名需 provider 配 model_aliases
+    )
+    max_turns: int = 0  # 0 = 沿用全局默认
     permission_mode: PermissionMode = PermissionMode.DEFAULT
-    dont_ask: bool = False                                    # 子 Agent 专属：自动批准 Ask 决策
-    background: bool = False                                  # 强制后台
-    isolation: bool = False                                   # 需要 Worktree 文件隔离
-    system_prompt: str = ""                                   # Markdown body
-    file_path: str = ""                                       # 来源文件绝对路径
+    dont_ask: bool = False  # 子 Agent 专属：自动批准 Ask 决策
+    background: bool = False  # 强制后台
+    isolation: bool = False  # 需要 Worktree 文件隔离
+    system_prompt: str = ""  # Markdown body
+    file_path: str = ""  # 来源文件绝对路径
     source: Source = Source.BUILTIN
 
     def is_fork(self) -> bool:
@@ -166,7 +170,7 @@ def _split_frontmatter(raw: str, file_path: str) -> tuple[dict | None, str]:
         return None, ""
 
     yaml_str = stripped[3:end_idx].strip()
-    body = stripped[end_idx + 3:].strip()
+    body = stripped[end_idx + 3 :].strip()
 
     if not yaml_str:
         print(
@@ -216,9 +220,7 @@ def _build_role(
         return None
     name = name.strip()
     if not _NAME_RE.match(name):
-        _warn(
-            f"invalid name '{name}': must match {_NAME_RE.pattern}"
-        )
+        _warn(f"invalid name '{name}': must match {_NAME_RE.pattern}")
         return None
 
     # --- description (必填) ---

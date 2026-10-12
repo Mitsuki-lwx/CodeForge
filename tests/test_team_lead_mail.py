@@ -29,8 +29,13 @@ async def _mgr_with_lead_msg(tmp_path, monkeypatch):
     box = Box(team.mailbox_dir)
     await box.write(
         "lead",
-        Message(from_="alice", to="lead", type=MessageType.TEXT,
-                summary="alice idle", content="finished the work"),
+        Message(
+            from_="alice",
+            to="lead",
+            type=MessageType.TEXT,
+            summary="alice idle",
+            content="finished the work",
+        ),
     )
     return mgr
 
@@ -46,10 +51,17 @@ async def test_poll_lead_mailboxes_reads_and_marks_read(tmp_path, monkeypatch):
 
 
 def test_build_team_update_reminder_format():
-    text = build_team_update_reminder([
-        {"team_name": "demo", "from_": "alice", "type": "text",
-         "summary": "alice idle", "content": "done"},
-    ])
+    text = build_team_update_reminder(
+        [
+            {
+                "team_name": "demo",
+                "from_": "alice",
+                "type": "text",
+                "summary": "alice idle",
+                "content": "done",
+            },
+        ]
+    )
     assert "<team-update>" in text
     assert "team=demo" in text
     assert "from=alice" in text
@@ -57,10 +69,17 @@ def test_build_team_update_reminder_format():
 
 def test_build_team_update_reminder_truncates_content():
     content = "x" * (TEAM_UPDATE_TRUNCATE + 100)
-    text = build_team_update_reminder([
-        {"team_name": "demo", "from_": "a", "type": "text",
-         "summary": "s", "content": content},
-    ])
+    text = build_team_update_reminder(
+        [
+            {
+                "team_name": "demo",
+                "from_": "a",
+                "type": "text",
+                "summary": "s",
+                "content": content,
+            },
+        ]
+    )
     assert "…[截断]" in text
     assert len(text) < TEAM_UPDATE_TRUNCATE + 300
 

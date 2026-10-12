@@ -160,7 +160,9 @@ async def test_agent_does_not_record_failed_tool(tmp_path):
     bundle = await build_session(provider=_provider(), workspace=tmp_path)
     try:
         ok, _content, _ms, _meta = await bundle.agent._exec_one(
-            ToolUse(id="t1", name="read_file", input={"file_path": str(tmp_path / "nope")})
+            ToolUse(
+                id="t1", name="read_file", input={"file_path": str(tmp_path / "nope")}
+            )
         )
         assert not ok
         assert _entries(bundle.journal.path) == []
@@ -212,8 +214,6 @@ async def test_journal_disabled_by_default_is_noop(tmp_path):
 def test_record_accepts_both_side_effect_categories(tmp_path, category):
     j = SideEffectJournal(tmp_path)
     try:
-        assert j.record(
-            tool_use_id="t1", tool_name="x", category=category, result="r"
-        )
+        assert j.record(tool_use_id="t1", tool_name="x", category=category, result="r")
     finally:
         j.close()

@@ -20,6 +20,10 @@
 #                  没配映射的保留别名会**退回主模型并告警**，不会被发出去撞 404。
 #                  注意：端点 /models 接口列出的模型**不等于可用**（实测有列出但
 #                  返回 404/403 的），配之前先手动调一次确认。
+#     - vision:    该模型是否支持**图像输入**（可选，默认 false）。
+#                  `browser_screenshot` 会把截图作为图像块回灌给模型 —— 只有多模态
+#                  模型能收。**默认关**：多数文本模型（DeepSeek 系等）收到图像块会
+#                  直接 400。关着时截图照样落盘、路径照样回报，只是不进上下文（给人看）。
 
 providers:
   - name: "Anthropic"
@@ -57,6 +61,21 @@ observability:
 features:
   coordinator_mode: false   # 团队协调器模式
   fork_teammate: false      # fork 子 agent 是否作为队友
+
+  # ── MCP 外部工具 ──
+  # 默认只加载**用户级** ~/.codeforge/mcp.json（你自己写的 = 你自己的授权）。
+  #
+  # ⚠️ 工作区里的 .codeforge/mcp.json 是**仓库带进来的文件**，而 MCP 的 stdio
+  #    server 就是"启动一个子进程"。默认加载它 = `git clone 任意仓库 && codeforge`
+  #    会在会话启动时、你还没输入任何东西之前执行仓库指定的命令，子进程还能读到
+  #    你的环境变量（实测能读到 API key）。这条路径不需要 agent 参与，
+  #    也没有审批环节可绕过。
+  #
+  #    要用项目自带的，显式打开下面这个开关（或设 CODEFORGE_TRUST_PROJECT_MCP=1）。
+  #    不开时会在启动提示里**明确告知"已跳过"**，不会静默。
+  mcp:
+    trust_project: false
+
   router:                   # 模型路由（默认关；开启后默认两档）
     enabled: false
     judge_prompt: ""        # 自定义复杂度判断指令；空则用内置

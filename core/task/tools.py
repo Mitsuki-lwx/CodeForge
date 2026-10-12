@@ -58,13 +58,15 @@ class TaskListTool(Tool):
         tasks = self._manager.list()
         items = []
         for bt in tasks:
-            items.append({
-                "id": bt.id,
-                "name": bt.name,
-                "status": _status_str(bt.status),
-                "tool_count": bt.tool_count,
-                "last_activity": bt.last_activity,
-            })
+            items.append(
+                {
+                    "id": bt.id,
+                    "name": bt.name,
+                    "status": _status_str(bt.status),
+                    "tool_count": bt.tool_count,
+                    "last_activity": bt.last_activity,
+                }
+            )
         return ToolResult(
             success=True,
             data=json.dumps(items, ensure_ascii=False, indent=2),
@@ -251,8 +253,12 @@ class SendMessageTool(Tool):
 
 
 def _status_str(status: TaskStatus) -> str:
-    return {TaskStatus.RUNNING: "running", TaskStatus.COMPLETED: "completed",
-            TaskStatus.FAILED: "failed", TaskStatus.CANCELLED: "cancelled"}[status]
+    return {
+        TaskStatus.RUNNING: "running",
+        TaskStatus.COMPLETED: "completed",
+        TaskStatus.FAILED: "failed",
+        TaskStatus.CANCELLED: "cancelled",
+    }[status]
 
 
 def _task_to_dict(bt: BackgroundTask) -> dict[str, Any]:

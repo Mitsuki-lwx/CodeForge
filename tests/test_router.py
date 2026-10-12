@@ -7,10 +7,13 @@ from core.agent.router import judge_and_route, resolve_router
 
 
 def _p(name, tier=""):
-    return ProviderConfig(name=name, protocol="anthropic", model="m", api_key="k", tier=tier)
+    return ProviderConfig(
+        name=name, protocol="anthropic", model="m", api_key="k", tier=tier
+    )
 
 
 # ── resolve_router ─────────────────────────────────────────────────
+
 
 def test_resolve_router_disabled_by_default():
     """默认关：即使配了 cheap+主，enabled=False 也不路由。"""
@@ -46,6 +49,7 @@ def test_resolve_router_no_current():
 
 
 # ── judge_and_route ────────────────────────────────────────────────
+
 
 class _Ok:
     def __init__(self, script):
@@ -97,9 +101,7 @@ async def test_judge_stream_error_turns_complex(monkeypatch):
     import llm.client as client_mod
 
     cheap = _p("cheap", "cheap")
-    monkeypatch.setattr(
-        client_mod.LLMClient, "create", lambda cfg: _Ok([("err", "x")])
-    )
+    monkeypatch.setattr(client_mod.LLMClient, "create", lambda cfg: _Ok([("err", "x")]))
     kind, _ = await judge_and_route(cheap, "hi")
     assert kind == "complex"
 

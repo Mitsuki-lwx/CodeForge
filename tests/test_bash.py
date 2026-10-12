@@ -1,7 +1,7 @@
 """Tests for Bash tool."""
 
-import asyncio
 import os
+import shutil
 import sys
 
 import pytest
@@ -35,13 +35,17 @@ class TestBash:
     async def test_meta_fields(self, bash, ctx):
         result = await bash.execute(ctx, {"command": "echo ok"})
         assert "exit_code" in result.meta
-        assert result.meta["exit_code"] == 0, f"exit_code was {result.meta['exit_code']}: {result.error}"
+        assert result.meta["exit_code"] == 0, (
+            f"exit_code was {result.meta['exit_code']}: {result.error}"
+        )
         assert "stdout" in result.meta
         assert "stderr" in result.meta
 
     @pytest.mark.asyncio
     async def test_failure(self, bash, ctx):
-        result = await bash.execute(ctx, {"command": "ls /nonexistent_path_for_test_xyz 2>&1"})
+        result = await bash.execute(
+            ctx, {"command": "ls /nonexistent_path_for_test_xyz 2>&1"}
+        )
         assert result.success is False
         assert result.meta["exit_code"] != 0
 
@@ -54,12 +58,18 @@ class TestBash:
 
     @pytest.mark.asyncio
     async def test_cwd_is_respected(self, bash, tmp_path):
-        """Verify bash runs in the specified cwd (cross-platform)."""
+        """Verify bash runs in the specified cwd (cross-platform).
+
+        不用 `pwd` —— 那是 Unix 工具，Windows 上要靠 Git 的 `usr\\bin` 才在 PATH 里，
+        CI 的 windows runner 没有它。改用解释器自身打印 cwd：两边都成立，
+        而且断言更强（真的比对了目录，而不是"输出非空"）。
+        """
         ctx = ExecutionContext(cwd=tmp_path, session_id="test")
-        result = await bash.execute(ctx, {"command": "pwd"})
+        result = await bash.execute(
+            ctx, {"command": f'"{sys.executable}" -c "import os;print(os.getcwd())"'}
+        )
         assert result.success is True, f"bash failed: {result.error}"
-        # pwd output should be non-empty and reflect some directory
-        assert len(result.data.strip()) > 0
+        assert os.path.samefile(result.data.strip(), tmp_path)
 
     @pytest.mark.asyncio
     async def test_stdout_stderr_separate(self, bash, ctx):
@@ -68,13 +78,14 @@ class TestBash:
         assert "out" in result.meta["stdout"]
         assert "err" in result.meta["stderr"]
 
+    @pytest.mark.skipif(
+        shutil.which("grep") is None, reason="本机没有 grep（Unix 工具），跳过"
+    )
     @pytest.mark.asyncio
     async def test_grep_no_match_non_error(self, bash, ctx, tmp_path):
         """grep 退出码 1(无匹配)不算错误,success=True 且附语义提示。"""
-        import tempfile
-        from pathlib import Path
         ctx2 = ExecutionContext(cwd=tmp_path, session_id="t")
-        # 定义一个含目标字符串但不匹配的模式文件?直接用管道:printf | grep 不匹配
+        # 用管道：printf/echo 的输出里没有 zzz → grep 退出 1（无匹配，不是错误）
         result = await bash.execute(ctx2, {"command": "echo abc | grep -q zzz"})
         assert result.success is True, f"grep exit1 should be non-error: {result}"
         assert "no matches found" in result.data

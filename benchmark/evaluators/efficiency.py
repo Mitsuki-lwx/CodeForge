@@ -14,8 +14,6 @@ result metadata 供趋势/Diag 用。
 
 from __future__ import annotations
 
-from typing import Any
-
 # 超限时对正确性分的降档系数（供 runner 引用）
 EFFICIENCY_GATE = 0.9
 
@@ -26,8 +24,12 @@ def _get_metrics(run_metrics: dict) -> dict[str, float]:
     usage = run_metrics.get("usage") or {}
     tok_out = usage.get("output_tokens")
     m = {
-        "tool_calls": float(run_metrics.get("tool_calls")) if run_metrics.get("tool_calls") is not None else None,
-        "elapsed_s": float(run_metrics.get("elapsed_s")) if run_metrics.get("elapsed_s") is not None else None,
+        "tool_calls": float(run_metrics.get("tool_calls"))
+        if run_metrics.get("tool_calls") is not None
+        else None,
+        "elapsed_s": float(run_metrics.get("elapsed_s"))
+        if run_metrics.get("elapsed_s") is not None
+        else None,
         "tokens_out": float(tok_out) if tok_out is not None else None,
     }
     return m
@@ -35,15 +37,21 @@ def _get_metrics(run_metrics: dict) -> dict[str, float]:
 
 def efficiency(item: dict, run_metrics: dict) -> dict:
     limits = dict(_DEFAULTS)
-    limits.update((item.get("limits") or {}))
+    limits.update(item.get("limits") or {})
     actual = _get_metrics(run_metrics)
 
     over: list[str] = []
-    if actual["tool_calls"] is not None and actual["tool_calls"] > limits["max_tool_calls"]:
+    if (
+        actual["tool_calls"] is not None
+        and actual["tool_calls"] > limits["max_tool_calls"]
+    ):
         over.append(f"tool_calls {actual['tool_calls']:.0f}>{limits['max_tool_calls']}")
     if actual["elapsed_s"] is not None and actual["elapsed_s"] > limits["max_seconds"]:
         over.append(f"elapsed {actual['elapsed_s']:.1f}s>{limits['max_seconds']}")
-    if actual["tokens_out"] is not None and actual["tokens_out"] > limits["max_tokens_out"]:
+    if (
+        actual["tokens_out"] is not None
+        and actual["tokens_out"] > limits["max_tokens_out"]
+    ):
         over.append(f"tokens_out {actual['tokens_out']:.0f}>{limits['max_tokens_out']}")
 
     if all(v is None for v in actual.values()):
@@ -52,7 +60,12 @@ def efficiency(item: dict, run_metrics: dict) -> dict:
     # 归一：每个维度都在限内给满分；超一项降一档，下限 0
     score = 1.0 - 0.33 * len(over)
     score = max(0.0, score)
-    return {"value": round(score, 3), "over": bool(over), "reasons": over, "raw": actual}
+    return {
+        "value": round(score, 3),
+        "over": bool(over),
+        "reasons": over,
+        "raw": actual,
+    }
 
 
 def evaluate_efficiency(item: dict, run_metrics: dict) -> dict:

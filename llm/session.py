@@ -83,21 +83,25 @@ class Session:
         """
         self.adapter = adapter
         self.timeout = (
-            timeout if timeout is not None
+            timeout
+            if timeout is not None
             else _env_float("CODEFORGE_LLM_TIMEOUT", 120.0)
         )
         self.max_retries = (
-            max_retries if max_retries is not None
+            max_retries
+            if max_retries is not None
             else _env_int("CODEFORGE_LLM_MAX_RETRIES", 2)
         )
         self.retry_delay = (
-            retry_delay if retry_delay is not None
+            retry_delay
+            if retry_delay is not None
             else _env_float("CODEFORGE_LLM_RETRY_DELAY", 0.5)
         )
         # 限流（429）单独用更长的退避基数：RPM/TPM 型限流按"分钟窗口"恢复，
         # 0.5s 起步的通用退避必然在窗口打开前就耗尽重试次数。
         self.rate_limit_delay = (
-            rate_limit_delay if rate_limit_delay is not None
+            rate_limit_delay
+            if rate_limit_delay is not None
             else _env_float("CODEFORGE_LLM_RATE_LIMIT_DELAY", 5.0)
         )
 

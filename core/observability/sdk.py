@@ -60,7 +60,9 @@ def _build_trace_exporters(cfg) -> list:
                 OTLPSpanExporter,
             )
 
-            exporters.append(OTLPSpanExporter(endpoint=cfg.otlp_endpoint, headers=cfg.otlp_headers))
+            exporters.append(
+                OTLPSpanExporter(endpoint=cfg.otlp_endpoint, headers=cfg.otlp_headers)
+            )
         except Exception:  # noqa: BLE001 —— OTLP 包未装则跳过,仅本地
             pass
     return exporters
@@ -151,7 +153,11 @@ def _init(cfg) -> None:
 
     # ── Metrics ──
     metric_exporters = []
-    metric_exporters.append(PeriodicExportingMetricReader(_build_metric_exporter(cfg), export_interval_millis=5_000))
+    metric_exporters.append(
+        PeriodicExportingMetricReader(
+            _build_metric_exporter(cfg), export_interval_millis=5_000
+        )
+    )
     # Console 仅当显式开启(保留零打扰默认)
     if _debug_console():
         metric_exporters.append(ConsoleMetricExporter())
@@ -162,8 +168,10 @@ def _init(cfg) -> None:
     meter = meter_provider.get_meter("codeforge")
 
     # ── Logging ──
-    logging.basicConfig(level=getattr(logging, cfg.log_level, logging.WARNING),
-                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level, logging.WARNING),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     root_logger = logging.getLogger()
     _setup_otel_logging(root_logger, cfg)
 
@@ -205,12 +213,14 @@ class _JsonlLogHandler(logging.Handler):
             msg = redact_text(self.format(record))
         except Exception:  # noqa: BLE001
             msg = self.format(record)
-        self._sink.write_line({
-            "ts": int(record.created * 1000),
-            "level": record.levelname,
-            "logger": record.name,
-            "msg": msg,
-        })
+        self._sink.write_line(
+            {
+                "ts": int(record.created * 1000),
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": msg,
+            }
+        )
 
 
 def _span_to_dict(span):
@@ -241,12 +251,14 @@ def _metric_to_dict(m) -> dict:
                     "min": getattr(r, "min", None),
                     "max": getattr(r, "max", None),
                 }
-            samples.append({
-                "attributes": dict(r.attributes or {}),
-                "value": val,
-                "start_time_unix_nano": getattr(r, "start_time_unix_nano", None),
-                "time_unix_nano": getattr(r, "time_unix_nano", None),
-            })
+            samples.append(
+                {
+                    "attributes": dict(r.attributes or {}),
+                    "value": val,
+                    "start_time_unix_nano": getattr(r, "start_time_unix_nano", None),
+                    "time_unix_nano": getattr(r, "time_unix_nano", None),
+                }
+            )
     except Exception:  # noqa: BLE001
         samples = []
     return {

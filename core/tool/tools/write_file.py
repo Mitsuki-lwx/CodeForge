@@ -10,6 +10,9 @@ from core.tool.result import ToolResult
 class WriteFileTool(Tool):
     """Write content to a file. Automatically creates parent directories."""
 
+    # 副作用工具**不重试**：注册表默认重试 2 次，写文件失败会被重复写入。
+    max_retries = 0
+
     timeout_seconds = 30.0
 
     def name(self) -> str:

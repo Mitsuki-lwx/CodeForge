@@ -55,7 +55,9 @@ def _mk_agent(cwd: Path, name: str = "sub") -> Agent:
 
 
 def _write_call(path: str = "a.txt", call_id: str = "t1") -> ToolUse:
-    return ToolUse(id=call_id, name="write_file", input={"file_path": path, "content": "x"})
+    return ToolUse(
+        id=call_id, name="write_file", input={"file_path": path, "content": "x"}
+    )
 
 
 def _allow_handler(seen: list[HITLRequest], choice=HITLChoice.ALLOW_ONCE):
@@ -229,7 +231,9 @@ def test_dialog_shows_origin_only_when_present(monkeypatch):
         _Console(),
         HITLRequest(tool_name="write_file", description="d", origin="calc"),
     )
-    dlg.show_hitl_dialog(_Console(), HITLRequest(tool_name="write_file", description="d"))
+    dlg.show_hitl_dialog(
+        _Console(), HITLRequest(tool_name="write_file", description="d")
+    )
 
     assert "[来自 SubAgent calc]" in captured[0]
     assert "SubAgent" not in captured[1], "主 Agent 自己的请求不该标来源"

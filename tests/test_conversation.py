@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from conversation.manager import ConversationManager
-from conversation.message import MessageRole, MessageStatus
 from conversation.history import (
     check_alternating,
     filter_system,
-    merge_consecutive_same_role,
 )
-from conversation.message import APIMessage
+from conversation.manager import ConversationManager
+from conversation.message import APIMessage, MessageRole, MessageStatus
 
 
 class TestHistory:
@@ -60,24 +58,6 @@ class TestHistory:
         filtered = filter_system(msgs)
         assert len(filtered) == 2
         assert filtered[0].role == "user"
-
-    def test_merge_consecutive_same_role(self):
-        msgs = [
-            APIMessage("system", "s1"),
-            APIMessage("system", "s2"),
-            APIMessage("user", "hi"),
-        ]
-        merged = merge_consecutive_same_role(msgs)
-        assert len(merged) == 2
-        assert merged[0].content == "s1\ns2"
-
-    def test_merge_noop_with_alternating(self):
-        msgs = [
-            APIMessage("user", "hi"),
-            APIMessage("assistant", "hello"),
-        ]
-        merged = merge_consecutive_same_role(msgs)
-        assert len(merged) == 2
 
 
 class TestConversationManager:

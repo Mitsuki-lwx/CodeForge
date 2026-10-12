@@ -56,7 +56,7 @@ class ConnectionPool:
             await client.connect()
             await asyncio.wait_for(client.initialize(), timeout=30.0)
             logger.info("MCP server '%s' connected and initialized", name)
-        except (Exception, asyncio.TimeoutError):
+        except (TimeoutError, Exception):
             logger.debug("Failed to connect MCP server '%s'", name, exc_info=True)
             await self._close_client(name)
             return None

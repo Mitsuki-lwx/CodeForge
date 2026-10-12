@@ -59,7 +59,8 @@ def test_set_agent_attrs_stamps_on_llm_span():
 
 def test_stamp_agent_attrs_stamps_on_tool_span():
     from conversation.manager import ConversationManager
-    from core.agent.agent import Agent, _stamp_agent_attrs
+    from core.agent.agent import Agent
+    from core.agent.agent_telemetry import stamp_agent_attrs
     from core.agent.config import AgentConfig
     from core.tool.context import ExecutionContext
 
@@ -80,7 +81,7 @@ def test_stamp_agent_attrs_stamps_on_tool_span():
     reset_agent_identity()
 
     span = _FakeSpan()
-    _stamp_agent_attrs(span, a)
+    stamp_agent_attrs(span, a)
     # 无 ContextVar 时兜底用 agent 自身：id=session_id、name=fmt-agent
     assert span.attrs.get("codeforge.agent.id") == "parent"
     assert span.attrs.get("codeforge.agent.name") == "fmt-agent"

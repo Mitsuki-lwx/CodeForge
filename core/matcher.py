@@ -90,8 +90,13 @@ class NotMatcher:
         return f"!{self.inner}"
 
 
-def compile_matcher(op: MatcherOp, value: str) -> Matcher:
-    """按操作符构造不可变匹配器。正则编译失败抛 ValueError。"""
+def compile_matcher(op: str, value: str) -> Matcher:
+    """按操作符构造不可变匹配器。
+
+    `op` 收 `str` 而不是 `MatcherOp`：唯一的运行时调用方喂的是**用户配置里的字符串**
+    （`core/hooks/rules.py` 从 YAML 读），声明成 Literal 只会逼调用点写 cast。
+    未知操作符在函数内部校验并抛 ValueError（调用方已按此处理）。
+    """
     if op == "exact":
         return ExactMatcher(value)
     if op == "glob":

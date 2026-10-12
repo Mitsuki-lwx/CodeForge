@@ -78,9 +78,7 @@ def apply_agent_tool_filter(p: FilterParams) -> list[str]:
     # ③ 后台白名单
     if p.background:
         result = [
-            t
-            for t in result
-            if t in ASYNC_AGENT_ALLOWED_TOOLS or is_mcp_or_skill(t)
+            t for t in result if t in ASYNC_AGENT_ALLOWED_TOOLS or is_mcp_or_skill(t)
         ]
 
     # ④ 角色黑名单

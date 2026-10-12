@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 
 def build_team_context_reminder(team: Any, info: TeammateInfo) -> str:
     """构造 `<team-context>` system reminder 文本（F40）。"""
-    members = ", ".join(
-        f"{m.name}({m.agent_type or 'member'})" for m in team.members
-    ) or "（仅 Lead）"
+    members = (
+        ", ".join(f"{m.name}({m.agent_type or 'member'})" for m in team.members)
+        or "（仅 Lead）"
+    )
     return (
         "<team-context>\n"
         f"team: {team.name}\n"
@@ -105,8 +106,15 @@ async def spawn_teammate(
         prompt=prompt,
         subagent_type=subagent_type,
         team=team,
-        info=_mk_info(member_name, agent_id, wt_path, branch, backend, session_dir,
-                       plan_mode_required),
+        info=_mk_info(
+            member_name,
+            agent_id,
+            wt_path,
+            branch,
+            backend,
+            session_dir,
+            plan_mode_required,
+        ),
     )
     # 挂 worktree 供 run_to_completion 清理
     sub_agent._worktree_session = getattr(parent_agent, "_worktree_session", None)
@@ -193,7 +201,9 @@ def _unique_member_name(team: Any, base: str) -> str:
     return candidate
 
 
-async def _create_worktree(worktree_mgr: Any, sanitized: str, member: str) -> tuple[str, str]:
+async def _create_worktree(
+    worktree_mgr: Any, sanitized: str, member: str
+) -> tuple[str, str]:
     """创建队员 worktree，返回 (绝对路径, 分支名)。"""
     wt_name = f"team-{sanitized}/{member}"
     branch = f"worktree-team-{sanitized}+{member}"
@@ -210,13 +220,23 @@ def _new_session_dir(worktree_path: str) -> str:
 
 
 def _mk_info(
-    name: str, agent_id: str, wt_path: str, branch: str,
-    backend: BackendType, session_dir: str, plan_mode_required: bool,
+    name: str,
+    agent_id: str,
+    wt_path: str,
+    branch: str,
+    backend: BackendType,
+    session_dir: str,
+    plan_mode_required: bool,
 ) -> TeammateInfo:
     return TeammateInfo(
-        name=name, agent_id=agent_id, worktree_path=wt_path, branch=branch,
-        backend_type=backend, session_dir=session_dir,
-        plan_mode_required=plan_mode_required, is_active=True,
+        name=name,
+        agent_id=agent_id,
+        worktree_path=wt_path,
+        branch=branch,
+        backend_type=backend,
+        session_dir=session_dir,
+        plan_mode_required=plan_mode_required,
+        is_active=True,
     )
 
 
@@ -246,15 +266,15 @@ def _build_teammate_agent(
             pass
 
     parent = parent_agent
-    workspace = str(
-        getattr(parent, "_exec_ctx", ExecutionContext(cwd=Path.cwd())).cwd
-    )
+    workspace = str(getattr(parent, "_exec_ctx", ExecutionContext(cwd=Path.cwd())).cwd)
     work_cwd = Path(worktree_path) if worktree_path else Path(workspace)
 
     sub_session = new_session_context(str(work_cwd))
     sub_runtime = SessionRuntime(
         session=sub_session,
-        context_window=getattr(getattr(parent, "_runtime", None), "context_window", 200000),
+        context_window=getattr(
+            getattr(parent, "_runtime", None), "context_window", 200000
+        ),
         notes=None,
     )
 

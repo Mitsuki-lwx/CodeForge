@@ -17,12 +17,12 @@ from .events import (
     CompactEvent,
     HookEvent,
     PermissionEvent,
-    TraceEvent,
     ToolEndEvent,
     ToolStartEvent,
+    TraceEvent,
 )
-from .writer import TraceWriter
 from .reader import AuditNotFoundError, children_of, iter_session, session_summary
+from .writer import TraceWriter
 
 __all__ = [
     "TraceEvent",

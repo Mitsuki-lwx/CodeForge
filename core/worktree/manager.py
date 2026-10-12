@@ -29,8 +29,8 @@ class WorktreeNameError(WorktreeError):
 class CleanupResult:
     """清理结果。"""
 
-    kept: bool                 # True = 保留（有变更），False = 已清理
-    reason: str = ""           # 保留原因
+    kept: bool  # True = 保留（有变更），False = 已清理
+    reason: str = ""  # 保留原因
 
 
 class WorktreeManager:
@@ -144,9 +144,7 @@ class WorktreeManager:
         if session is None:
             raise WorktreeError(f"no worktree session named '{name}'")
         if not session.path or not Path(session.path).is_dir():
-            raise WorktreeError(
-                f"worktree '{name}' directory missing: {session.path}"
-            )
+            raise WorktreeError(f"worktree '{name}' directory missing: {session.path}")
         return session
 
     async def exit(self, name: str) -> None:
@@ -212,9 +210,7 @@ class WorktreeManager:
 
     def _cleanup(self, session: WorktreeSession) -> CleanupResult:
         """按三层过滤清理单个 worktree。"""
-        check = can_auto_clean(
-            self._repo_root, session.name, session.path
-        )
+        check = can_auto_clean(self._repo_root, session.name, session.path)
         if not check.ok:
             return CleanupResult(kept=True, reason=check.reason)
 
@@ -243,7 +239,8 @@ class WorktreeManager:
         try:
             subprocess.run(
                 ["git", "-C", str(self._repo_root), "rev-parse", "--git-dir"],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
             return True
         except (OSError, subprocess.TimeoutExpired):
@@ -254,10 +251,18 @@ class WorktreeManager:
         try:
             r = subprocess.run(
                 [
-                    "git", "-C", str(self._repo_root),
-                    "worktree", "add", "-b", branch, str(wt_dir),
+                    "git",
+                    "-C",
+                    str(self._repo_root),
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch,
+                    str(wt_dir),
                 ],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise WorktreeError(f"git worktree add failed: {e}") from e
@@ -270,9 +275,18 @@ class WorktreeManager:
         """git worktree remove <dir> --force。"""
         try:
             r = subprocess.run(
-                ["git", "-C", str(self._repo_root), "worktree", "remove",
-                 "--force", str(wt_dir)],
-                capture_output=True, text=True, timeout=60,
+                [
+                    "git",
+                    "-C",
+                    str(self._repo_root),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(wt_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise WorktreeError(f"git worktree remove failed: {e}") from e
@@ -288,7 +302,9 @@ class WorktreeManager:
         try:
             r = subprocess.run(
                 ["git", "-C", str(self._repo_root), "branch", "-D", branch],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise WorktreeError(f"git branch -D failed: {e}") from e
@@ -301,7 +317,9 @@ class WorktreeManager:
         try:
             git_dir = subprocess.run(
                 ["git", "-C", str(self._repo_root), "rev-parse", "--git-path", "info"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             ).stdout.strip()
             if not git_dir:
                 git_dir = str(self._repo_root / ".git" / "info")

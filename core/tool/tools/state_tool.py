@@ -32,7 +32,9 @@ class SetGoalTool(Tool):
     def input_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"goal": {"type": "string", "description": "The session goal."}},
+            "properties": {
+                "goal": {"type": "string", "description": "The session goal."}
+            },
             "required": ["goal"],
         }
 
@@ -71,7 +73,9 @@ class AddTodoTool(Tool):
     def input_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"text": {"type": "string", "description": "Todo item text."}},
+            "properties": {
+                "text": {"type": "string", "description": "Todo item text."}
+            },
             "required": ["text"],
         }
 

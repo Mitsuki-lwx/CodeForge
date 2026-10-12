@@ -411,6 +411,7 @@ async def test_dispatch_exit_raises_systemexit():
 
 # ── /mcp 查询命令 ──────────────────────────────────────────────────
 
+
 async def test_mcp_command_lists_servers():
     from core.commands.builtin_mcp import handle_mcp
 
@@ -419,8 +420,10 @@ async def test_mcp_command_lists_servers():
     class UI:
         async def mcp_list(self):
             return [
-                {"name": "filesystem", "tools": [
-                    {"name": "read_file", "description": "read a file"}]},
+                {
+                    "name": "filesystem",
+                    "tools": [{"name": "read_file", "description": "read a file"}],
+                },
             ]
 
         def println(self, m):

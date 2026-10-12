@@ -84,6 +84,10 @@ class BashTool(Tool):
     """Execute a shell command asynchronously and return its output."""
 
     timeout_seconds = 120.0
+    # ⚠️ 副作用工具**不重试**：注册表默认 `max_retries = 2`，那意味着一条超时或
+    # 抛异常的命令会被**再跑两遍** —— 对 `git push` / `rm -rf` / `npm publish`
+    # 是不可接受的。只读工具（read_file/glob/grep）保留重试是有意义的。
+    max_retries = 0
 
     def name(self) -> str:
         return "bash"
@@ -92,7 +96,10 @@ class BashTool(Tool):
         return (
             "Execute a shell command. Returns stdout, stderr, and exit code. "
             "Prefer dedicated tools (read_file, write_file, edit_file, glob, grep) "
-            "over shell commands whenever a dedicated tool exists for the task."
+            "over shell commands whenever a dedicated tool exists for the task. "
+            "Set run_in_background=true to start a long-running process "
+            "(dev server, watcher, build) and get a shell_id back immediately; "
+            "then poll it with bash_output and stop it with kill_shell."
         )
 
     def input_schema(self) -> dict:
@@ -102,6 +109,13 @@ class BashTool(Tool):
                 "command": {"type": "string"},
                 "description": {"type": "string"},
                 "timeout": {"type": "integer", "minimum": 1},
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": (
+                        "后台运行：立刻返回 shell_id，不等待命令结束。"
+                        "用 bash_output 读它的输出、kill_shell 停掉它。"
+                    ),
+                },
             },
             "required": ["command"],
         }
@@ -109,6 +123,9 @@ class BashTool(Tool):
     async def execute(self, context: ExecutionContext, input: dict) -> ToolResult:
         command = input["command"]
         timeout = input.get("timeout", self.timeout_seconds)
+
+        if input.get("run_in_background"):
+            return await self._spawn_background(context, command)
 
         try:
             if sys.platform == "win32":
@@ -134,7 +151,7 @@ class BashTool(Tool):
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 try:
                     proc.kill()
                 except Exception:
@@ -171,10 +188,16 @@ class BashTool(Tool):
 
             # 特殊命令的"非错误"非零退出(如 grep exit 1=无匹配)或 exit 0:
             # 不判为错误,仅在输出里附退出码提示,让 agent 读到语义而不误判。
-            merged = (stdout_str + ("\n" + stderr_str if stderr_str.strip() else "")).strip()
+            merged = (
+                stdout_str + ("\n" + stderr_str if stderr_str.strip() else "")
+            ).strip()
             if exit_code != 0:
                 hint = _exit_code_hint(command, exit_code)
-                out = f"{merged}\n(hint: {hint})" if merged else f"(no output)\n(hint: {hint})"
+                out = (
+                    f"{merged}\n(hint: {hint})"
+                    if merged
+                    else f"(no output)\n(hint: {hint})"
+                )
                 data = out
             else:
                 data = merged or "(no output)"
@@ -195,6 +218,36 @@ class BashTool(Tool):
                 error=str(e),
                 meta={"command": command, "exit_code": -1},
             )
+
+    async def _spawn_background(
+        self, context: ExecutionContext, command: str
+    ) -> ToolResult:
+        """起一个后台进程并立刻返回它的 id。
+
+        刻意**不等待**任何输出：调用方的意图就是"先把它跑起来"。
+        """
+        try:
+            rec = await context.shells.spawn(
+                command,
+                cwd=context.cwd,
+                env={**os.environ, **context.env} if context.env else None,
+            )
+        except Exception as e:  # noqa: BLE001 —— 起不来就是起不来，报清楚
+            return ToolResult(
+                success=False,
+                error=f"后台启动失败: {type(e).__name__}: {e}",
+                meta={"command": command, "exit_code": -1},
+            )
+        return ToolResult(
+            success=True,
+            data=(
+                f"已在后台启动 {rec.id}\n"
+                f"命令: {command}\n"
+                "用 bash_output(shell_id) 读它的输出（可带 wait_ms 等一会儿），"
+                "用 kill_shell(shell_id) 停掉它。"
+            ),
+            meta={"shell_id": rec.id, "command": command, "background": True},
+        )
 
     def is_read_only(self) -> bool:
         return False

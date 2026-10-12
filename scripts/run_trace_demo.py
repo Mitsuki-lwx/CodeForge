@@ -66,7 +66,7 @@ def main() -> None:
     exec_ctx = ExecutionContext(cwd=work, session_id="demo-session-001")
     conv = ConversationManager(
         system_prompt="You are CodeForge. Use tools to inspect and edit code. "
-                      "When done, reply with a short summary."
+        "When done, reply with a short summary."
     )
     cfg = AgentConfig(max_iterations=12, result_preview_max_chars=200)
     agent = Agent(
@@ -86,12 +86,14 @@ def main() -> None:
         f"请: 1) 读 calc.py 2) 修复它 3) 运行 pytest 验证 test_calc.py 通过。"
         f"做完用一句话总结改了哪个文件、测试是否通过。"
     )
-    print(f"\n[demo] instruction: {instruction}\n{'='*70}")
+    print(f"\n[demo] instruction: {instruction}\n{'=' * 70}")
 
     events = []
     asyncio.run(_collect(agent, instruction, events))
 
-    print(f"\n{'='*70}\n[demo] agent run finished. events received by UI: {len(events)}")
+    print(
+        f"\n{'=' * 70}\n[demo] agent run finished. events received by UI: {len(events)}"
+    )
 
     # dump audit
     pf = audit / "audit" / "demo-session-001.jsonl"
@@ -99,13 +101,24 @@ def main() -> None:
         print("[demo] !! no audit file written")
         return
     print(f"\n[demo] audit file: {pf}\n")
-    lines = [json.loads(l) for l in pf.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [
+        json.loads(line)
+        for line in pf.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     for ev in lines:
         print("  " + json.dumps(ev, ensure_ascii=False))
 
     from core.trace.reader import session_summary
+
     print("\n[demo] summary:")
-    print("  " + json.dumps(session_summary("demo-session-001", audit_dir=str(audit)), ensure_ascii=False))
+    print(
+        "  "
+        + json.dumps(
+            session_summary("demo-session-001", audit_dir=str(audit)),
+            ensure_ascii=False,
+        )
+    )
 
     # cleanup
     shutil.rmtree(work, ignore_errors=True)

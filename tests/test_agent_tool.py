@@ -203,13 +203,15 @@ def test_agent_tool_concurrency_safety():
 
     cat = load_catalog(str(Path.cwd()))
     # 追加一个 worktree 隔离的可写角色，验证 isolation → 安全
-    cat._add_all([
-        AgentRole(
-            name="coder-isolated",
-            description="isolated coder",
-            isolation=True,
-        ),
-    ])
+    cat._add_all(
+        [
+            AgentRole(
+                name="coder-isolated",
+                description="isolated coder",
+                isolation=True,
+            ),
+        ]
+    )
     tool = AgentTool(catalog=cat, task_mgr=None, bg_enabled=True)
 
     # 只读角色（Explore 禁写文件）→ 安全
@@ -231,7 +233,6 @@ async def test_agent_tool_background_launch():
 
     catalog = load_catalog(str(Path.cwd()))
     task_mgr = BackgroundTaskManager()
-    from core.tool.tools.agent_tool import AgentTool
 
     registry = _make_registry()
     parent = _make_parent_agent(registry)
@@ -260,7 +261,6 @@ async def test_agent_tool_fork_background():
 
     catalog = load_catalog(str(Path.cwd()))
     task_mgr = BackgroundTaskManager()
-    from core.tool.tools.agent_tool import AgentTool
 
     registry = _make_registry()
     parent = _make_parent_agent(registry)
@@ -285,7 +285,6 @@ def test_agent_tool_bg_disabled_fork_error():
 
     catalog = load_catalog(str(Path.cwd()))
     task_mgr = BackgroundTaskManager()
-    from core.tool.tools.agent_tool import AgentTool
 
     registry = _make_registry()
     parent = _make_parent_agent(registry)
@@ -559,7 +558,6 @@ def test_foreground_has_no_timeout_constant(monkeypatch):
     """_run_foreground 不再依赖 AUTO_BACKGROUND_SECONDS/wait_for 超时转后台。"""
     import inspect
 
-    from core.tool.tools import agent_tool
     from core.tool.tools.agent_tool import AgentTool
 
     src = inspect.getsource(AgentTool._run_foreground)
@@ -570,6 +568,7 @@ def test_foreground_has_no_timeout_constant(monkeypatch):
 
 
 # ── 回归：子 agent 只读继承会话状态（spec_session_state）────────────
+
 
 def test_subagent_inherits_state_snapshot_readonly(monkeypatch, tmp_path):
     """子 agent 的 system 含父会话目标+约束快照；registry 无状态写工具。"""
@@ -1072,7 +1071,9 @@ async def test_hook_engine_blocks_tool_inside_subagent(tmp_path):
         parent._hooks = hooks
         tool = AgentTool(catalog=None, task_mgr=None, bg_enabled=True)
         tool.set_parent(parent)
-        return tool._build_sub_agent(_plain_role(), ["read_file"], "main", is_fork=False)
+        return tool._build_sub_agent(
+            _plain_role(), ["read_file"], "main", is_fork=False
+        )
 
     async def _run_and_collect(sub) -> tuple[str, list[str]]:
         """跑一次工具，返回 (ToolCallFinished.preview, 写进对话的 tool_result 文本)。
@@ -1099,7 +1100,9 @@ async def test_hook_engine_blocks_tool_inside_subagent(tmp_path):
 
     # 反证：无 hook → 真的读到了文件内容
     plain_preview, plain_results = await _run_and_collect(_sub_with(None))
-    assert "hello" in plain_preview, f"无 hook 时 read_file 应成功，实际 {plain_preview!r}"
+    assert "hello" in plain_preview, (
+        f"无 hook 时 read_file 应成功，实际 {plain_preview!r}"
+    )
     assert plain_results and "hello" in plain_results[-1], (
         f"无 hook 时对话应写入文件内容，实际 {plain_results!r}"
     )
@@ -1116,7 +1119,103 @@ async def test_hook_engine_blocks_tool_inside_subagent(tmp_path):
         cwd=Path.cwd(),
     )
     hooked_preview, hooked_results = await _run_and_collect(_sub_with(runner))
-    assert hooked_preview == "", f"被拦截的调用不该产出 ToolCallFinished，实际 {hooked_preview!r}"
+    assert hooked_preview == "", (
+        f"被拦截的调用不该产出 ToolCallFinished，实际 {hooked_preview!r}"
+    )
     assert hooked_results and hooked_results[-1].startswith("Error: Blocked by hook"), (
         f"对话里应记下被拦截原因，实际 {hooked_results!r}"
     )
+
+
+# ── 取消传播：父被 Ctrl-C 时前台子 Agent 必须停下来 ──────────────────────
+#
+# 回归背景（实测）：前台子 Agent 刻意**不设超时**（设了会退回 sleep+ls 轮询）。
+# 但"不设超时"不该等于"按了 Ctrl-C 也停不下来" —— 父的 `cancel()` 原本
+# **不会**传到子，于是用户看到 "Cancelled" 之后子 Agent 还在跑满自己的
+# `max_iterations`（每轮 LLM+工具，最长可达数小时），父一直卡在 await 上。
+
+
+class _LoopingClient:
+    """每轮都发一个工具调用 → 子 Agent 会一直循环到 max_iterations。"""
+
+    class _Cfg:
+        model = "m"
+        context_window = 200000
+
+    config = _Cfg()
+
+    async def stream_chat(self, messages, **kw):
+        import asyncio
+
+        from llm.stream_events import CompletionDone, TextChunk, ToolUse
+
+        await asyncio.sleep(0.05)
+        yield TextChunk("w")
+        yield ToolUse(id="t1", name="definitely_not_a_tool", input={})
+        yield CompletionDone(usage={}, stop_reason="tool_use")
+
+
+def _looping_agent(ws, sid, iterations=20):
+    from core.agent.agent import Agent
+    from core.agent.config import AgentConfig
+    from core.tool.context import ExecutionContext
+    from core.tool.registry import ToolRegistry
+
+    return Agent(
+        registry=ToolRegistry(),
+        llm_client=_LoopingClient(),
+        exec_ctx=ExecutionContext(cwd=ws, session_id=sid),
+        conversation=ConversationManager(),
+        config=AgentConfig(max_iterations=iterations),
+    )
+
+
+@pytest.mark.asyncio
+async def test_parent_cancel_stops_foreground_subagent(tmp_path):
+    """★ 父取消后子 Agent 提前收敛（不再跑满 max_iterations）。"""
+    import time
+
+    from core.agent.sub_agent import linked_cancel, run_to_completion
+
+    sub = _looping_agent(tmp_path, "sub", iterations=40)
+    lead = _looping_agent(tmp_path, "lead", iterations=1)
+
+    async def run():
+        with linked_cancel(sub, lead):
+            return await run_to_completion(sub, sub._conversation, "长活")
+
+    t0 = time.monotonic()
+    task = asyncio.create_task(run())
+    await asyncio.sleep(0.3)
+    lead.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=30)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 5, f"取消没有生效，跑了 {elapsed:.1f}s"
+
+
+@pytest.mark.asyncio
+async def test_without_the_bridge_parent_cancel_does_not_reach_child(tmp_path):
+    """反面：不装桥时父的取消**传不到**子（这条钉住"为什么要那个桥"）。"""
+    from core.agent.sub_agent import run_to_completion
+
+    sub = _looping_agent(tmp_path, "sub", iterations=4)
+    lead = _looping_agent(tmp_path, "lead", iterations=1)
+
+    task = asyncio.create_task(run_to_completion(sub, sub._conversation, "长活"))
+    await asyncio.sleep(0.1)
+    lead.cancel()
+    await asyncio.wait_for(task, timeout=30)  # 不抛 CancelledError，跑完为止
+    assert sub._cancel.is_set() is False  # 从未被父影响
+
+
+@pytest.mark.asyncio
+async def test_linked_cancel_is_a_noop_without_a_parent(tmp_path):
+    """没有父（或父没有 _cancel）时桥要静默降级，不能炸。"""
+    from core.agent.sub_agent import linked_cancel
+
+    sub = _looping_agent(tmp_path, "sub", iterations=1)
+    with linked_cancel(sub, None):
+        pass
+    with linked_cancel(sub, object()):
+        pass

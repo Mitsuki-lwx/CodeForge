@@ -6,7 +6,7 @@ from pathlib import Path
 from core.tool.context import ExecutionContext
 from core.tool.interface import Tool
 from core.tool.result import ToolResult
-from core.tool.tools import SKIP_DIRS, _path_climbs_to_skip
+from core.tool.tools import _path_climbs_to_skip
 
 
 class GrepTool(Tool):
@@ -68,7 +68,11 @@ class GrepTool(Tool):
         total_count = 0
 
         try:
-            files = list(root.rglob(include_glob)) if include_glob else list(root.rglob("*"))
+            files = (
+                list(root.rglob(include_glob))
+                if include_glob
+                else list(root.rglob("*"))
+            )
             for f in files:
                 if not f.is_file():
                     continue
@@ -76,7 +80,9 @@ class GrepTool(Tool):
                 if _path_climbs_to_skip(f):
                     continue
                 try:
-                    for line_no, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                    for line_no, line in enumerate(
+                        f.read_text(encoding="utf-8").splitlines(), 1
+                    ):
                         if regex.search(line):
                             rel = str(f.relative_to(root))
                             matches.append({"file": rel, "line": line_no, "text": line})

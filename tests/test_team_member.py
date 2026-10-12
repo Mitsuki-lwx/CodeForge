@@ -31,10 +31,26 @@ async def test_run_team_member_text_then_shutdown(tmp_path, monkeypatch):
     mgr = _FakeManager(tmp_path)
     box = Box(mgr.team.mailbox_dir)
     # 先写 text 任务，再写 shutdown → 跑一次后退出，避免测循环卡在超时
-    await box.write("agent-a", Message(from_="lead", to="a", type=MessageType.TEXT,
-                                       summary="do work", content="do the task"))
-    await box.write("agent-a", Message(from_="lead", to="a", type=MessageType.SHUTDOWN_REQUEST,
-                                       summary="stop", content=""))
+    await box.write(
+        "agent-a",
+        Message(
+            from_="lead",
+            to="a",
+            type=MessageType.TEXT,
+            summary="do work",
+            content="do the task",
+        ),
+    )
+    await box.write(
+        "agent-a",
+        Message(
+            from_="lead",
+            to="a",
+            type=MessageType.SHUTDOWN_REQUEST,
+            summary="stop",
+            content="",
+        ),
+    )
 
     ran: list[str] = []
 
@@ -48,8 +64,12 @@ async def test_run_team_member_text_then_shutdown(tmp_path, monkeypatch):
         return object(), object()
 
     await run_team_member(
-        manager=mgr, team_name="demo", member_name="alice", agent_id="agent-a",
-        worktree_path="/wt", agent_factory=factory,
+        manager=mgr,
+        team_name="demo",
+        member_name="alice",
+        agent_id="agent-a",
+        worktree_path="/wt",
+        agent_factory=factory,
     )
 
     # 跑了一次 + 退出
@@ -65,6 +85,9 @@ async def test_run_team_member_unknown_team(tmp_path):
     mgr = _FakeManager(tmp_path)
     # 不存在的 team → 静默返回不抛
     await run_team_member(
-        manager=mgr, team_name="nope", member_name="a", agent_id="agent-a",
+        manager=mgr,
+        team_name="nope",
+        member_name="a",
+        agent_id="agent-a",
         worktree_path="/wt",
     )

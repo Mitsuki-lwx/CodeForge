@@ -60,14 +60,14 @@ def test_sink_keeps_only_the_latest():
 
 
 def test_hint_falls_back_to_model_when_nothing_recorded():
-    from tui.app import _progress_hint
+    from tui.render import _progress_hint
 
     assert _progress_hint(_FakeApp(_FakeAgent(ProgressSink()))) == "模型响应"
 
 
 def test_hint_survives_missing_agent_or_sink():
     """app 上还没有 agent、或父没挂汇时都不能报错。"""
-    from tui.app import _progress_hint
+    from tui.render import _progress_hint
 
     assert _progress_hint(_FakeApp(None)) == "模型响应"
     assert _progress_hint(_FakeApp(_FakeAgent(None))) == "模型响应"
@@ -75,7 +75,7 @@ def test_hint_survives_missing_agent_or_sink():
 
 def test_hint_names_child_and_action():
     """核心：把「等模型响应」换成人话 —— 在等哪个子 Agent、它在做什么。"""
-    from tui.app import _progress_hint
+    from tui.render import _progress_hint
 
     sink = ProgressSink()
     sink.note("researcher", "调工具", "write_file")
@@ -87,7 +87,7 @@ def test_hint_names_child_and_action():
 
 
 def test_hint_omits_empty_detail():
-    from tui.app import _progress_hint
+    from tui.render import _progress_hint
 
     sink = ProgressSink()
     sink.note("sub", "等模型响应")

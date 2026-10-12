@@ -10,6 +10,13 @@
 .codeforge/host.json
 .codeforge/host.token
 
+# 浏览器验证（browser_screenshot）落盘的截图：运行时产物，不入库
+.codeforge/screenshots/
+
+# `@playwright/mcp` 默认往工作区写的页面快照（`.playwright-mcp/page-*.yml`）。
+# 它**不**认 `--output-dir`（那个只管自动命名的截图），所以只能在这儿忽略。
+.playwright-mcp/
+
 # agent 在会话里写出来的工作产物（端到端验证会让它写样例文件）
 notes/
 

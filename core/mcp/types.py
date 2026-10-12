@@ -10,6 +10,7 @@ from typing import Any
 @dataclass
 class JsonRpcRequest:
     """JSON-RPC 2.0 请求。"""
+
     method: str
     params: dict[str, Any] | None = None
     id: int = 0
@@ -29,6 +30,7 @@ class JsonRpcRequest:
 @dataclass
 class JsonRpcNotification:
     """JSON-RPC 2.0 通知（无 id，不需要响应）。"""
+
     method: str
     params: dict[str, Any] | None = None
     jsonrpc: str = "2.0"
@@ -46,6 +48,7 @@ class JsonRpcNotification:
 @dataclass
 class JsonRpcResponse:
     """JSON-RPC 2.0 成功响应。"""
+
     id: int
     result: Any = None
     jsonrpc: str = "2.0"
@@ -54,6 +57,7 @@ class JsonRpcResponse:
 @dataclass
 class JsonRpcError:
     """JSON-RPC 2.0 错误响应。"""
+
     id: int
     error: dict[str, Any] = field(default_factory=dict)
     jsonrpc: str = "2.0"

@@ -182,7 +182,9 @@ def _check_regex(output: str, pattern: str) -> tuple[float, str]:
 
 
 def _check_exact(output: str, want: str) -> tuple[float, str]:
-    legacy_norm = lambda t: " ".join(t.strip().lower().split())
+    def legacy_norm(t: str) -> str:
+        return " ".join(t.strip().lower().split())
+
     ok = legacy_norm(output) == legacy_norm(want)
     return (1.0 if ok else 0.0), ("完全一致" if ok else "不一致")
 

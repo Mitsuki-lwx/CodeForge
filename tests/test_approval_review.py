@@ -36,13 +36,17 @@ class _FakeClient:
     只实现 `stream_chat`——审查者只调它，这也顺带证明了审查者**不需要别的能力**。
     """
 
-    def __init__(self, *, text: str | None = None, events=None, raise_exc=None, delay=0.0):
+    def __init__(
+        self, *, text: str | None = None, events=None, raise_exc=None, delay=0.0
+    ):
         self._text = text
         self._events = events
         self._raise = raise_exc
         self._delay = delay
 
-    async def stream_chat(self, messages, system_prompt="", tools=None, system_blocks=None):
+    async def stream_chat(
+        self, messages, system_prompt="", tools=None, system_blocks=None
+    ):
         if self._delay:
             await asyncio.sleep(self._delay)
         if self._raise is not None:
@@ -79,14 +83,18 @@ async def _review(client, timeout: float = 5.0):
 
 class TestParseReviewOutput:
     def test_plain_json(self):
-        got = parse_review_output('{"decision": "allow", "risk": "low", "reason": "工作区内"}')
+        got = parse_review_output(
+            '{"decision": "allow", "risk": "low", "reason": "工作区内"}'
+        )
         assert got is not None
         assert got.allowed is True
         assert got.risk == "low"
         assert got.reason == "工作区内"
 
     def test_deny(self):
-        got = parse_review_output('{"decision": "deny", "risk": "high", "reason": "工作区外"}')
+        got = parse_review_output(
+            '{"decision": "deny", "risk": "high", "reason": "工作区外"}'
+        )
         assert got is not None and got.allowed is False
 
     def test_json_inside_code_fence(self):
@@ -95,7 +103,9 @@ class TestParseReviewOutput:
         assert got is not None and got.allowed is True
 
     def test_json_with_surrounding_prose(self):
-        got = parse_review_output('我的判断如下：\n{"decision": "deny", "reason": "no"}\n完毕。')
+        got = parse_review_output(
+            '我的判断如下：\n{"decision": "deny", "reason": "no"}\n完毕。'
+        )
         assert got is not None and got.allowed is False
 
     def test_decision_case_insensitive(self):
@@ -109,9 +119,9 @@ class TestParseReviewOutput:
             "   ",
             "没有 JSON",
             "{不是合法 json",
-            '{"risk": "low"}',                      # 缺 decision
-            '{"decision": "maybe"}',                # decision 非法
-            '{"decision": 123}',                    # decision 非字符串
+            '{"risk": "low"}',  # 缺 decision
+            '{"decision": "maybe"}',  # decision 非法
+            '{"decision": 123}',  # decision 非字符串
         ],
     )
     def test_unparseable_returns_none(self, bad):
@@ -124,7 +134,9 @@ class TestParseReviewOutput:
         """
         got = parse_review_output('[{"decision": "allow"}]')
         assert got is not None and got.allowed is True
-        assert parse_review_output('[{"decision": "deny"}, {"decision": "allow"}]') is None
+        assert (
+            parse_review_output('[{"decision": "deny"}, {"decision": "allow"}]') is None
+        )
 
 
 class TestBuildReviewInput:
@@ -157,7 +169,9 @@ class TestReviewerSuccess:
     @pytest.mark.asyncio
     async def test_allow_passthrough(self):
         outcome = await _review(
-            _FakeClient(text='{"decision": "allow", "risk": "low", "reason": "工作区内新建文件"}')
+            _FakeClient(
+                text='{"decision": "allow", "risk": "low", "reason": "工作区内新建文件"}'
+            )
         )
         assert outcome.allowed is True
         assert outcome.reason == "工作区内新建文件"
@@ -165,7 +179,9 @@ class TestReviewerSuccess:
     @pytest.mark.asyncio
     async def test_deny_passthrough(self):
         outcome = await _review(
-            _FakeClient(text='{"decision": "deny", "risk": "high", "reason": "工作区外删除"}')
+            _FakeClient(
+                text='{"decision": "deny", "risk": "high", "reason": "工作区外删除"}'
+            )
         )
         assert outcome.allowed is False
         assert outcome.reason == "工作区外删除"
@@ -184,7 +200,9 @@ class TestReviewerSuccess:
         seen = {}
 
         class _C(_FakeClient):
-            async def stream_chat(self, messages, system_prompt="", tools=None, system_blocks=None):
+            async def stream_chat(
+                self, messages, system_prompt="", tools=None, system_blocks=None
+            ):
                 seen["system_prompt"] = system_prompt
                 seen["tools"] = tools
                 yield TextChunk(text='{"decision": "allow"}')
@@ -202,7 +220,9 @@ class TestReviewerSuccess:
 class TestReviewerFailClosed:
     @pytest.mark.asyncio
     async def test_timeout(self):
-        outcome = await _review(_FakeClient(text='{"decision": "allow"}', delay=0.3), timeout=0.05)
+        outcome = await _review(
+            _FakeClient(text='{"decision": "allow"}', delay=0.3), timeout=0.05
+        )
         assert outcome.allowed is False
         assert "超时" in outcome.reason
 
@@ -234,7 +254,9 @@ class TestReviewerFailClosed:
     @pytest.mark.asyncio
     async def test_missing_decision_field(self):
         """缺字段**不能**默认放行。"""
-        outcome = await _review(_FakeClient(text='{"risk": "low", "reason": "看着没事"}'))
+        outcome = await _review(
+            _FakeClient(text='{"risk": "low", "reason": "看着没事"}')
+        )
         assert outcome.allowed is False
 
     @pytest.mark.asyncio
@@ -304,7 +326,11 @@ def test_other_policies_still_answered_synchronously():
     """其余档位的同步代答行为**逐字不变**（零回归）。"""
     from llm.stream_events import ToolUse
 
-    for policy, expected in (("deny_all", "deny"), ("allow_write", "allow"), ("allow_all", "allow")):
+    for policy, expected in (
+        ("deny_all", "deny"),
+        ("allow_write", "allow"),
+        ("allow_all", "allow"),
+    ):
         agent = _agent(policy=policy)
         decision = agent._check_tool_permission(
             ToolUse(id="tu", name="write_file", input={"path": "a.txt", "content": "x"})
@@ -322,7 +348,9 @@ def test_should_review_requires_both_reviewer_and_policy():
     assert _agent(policy="review")._should_review_approval() is False
     assert _agent(reviewer=object())._should_review_approval() is False
     assert _agent(policy="review", reviewer=object())._should_review_approval() is True
-    assert _agent(policy="deny_all", reviewer=object())._should_review_approval() is False
+    assert (
+        _agent(policy="deny_all", reviewer=object())._should_review_approval() is False
+    )
 
 
 def test_recent_user_messages_only_returns_user_role():
@@ -405,7 +433,9 @@ def test_build_reviewer_warns_when_no_alias_configured(tmp_path):
     from core.agent.bootstrap import _build_approval_reviewer
     from llm.client import LLMClient
 
-    cfg = ProviderConfig(name="t", protocol="openai", model="main-model", api_key="sk-x")
+    cfg = ProviderConfig(
+        name="t", protocol="openai", model="main-model", api_key="sk-x"
+    )
     notices: list[str] = []
     reviewer = _build_approval_reviewer(
         LLMClient.create(cfg), notices, _llm_backend_cfg(tmp_path)

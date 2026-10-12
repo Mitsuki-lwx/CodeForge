@@ -17,11 +17,6 @@ from core.agent.plan_mode import (
     plan_system_reminder,
 )
 
-# 将 run_to_completion 挂载到 Agent 类上
-from core.agent.sub_agent import attach_to_agent
-
-attach_to_agent()
-
 __all__ = [
     "Agent",
     "AgentConfig",

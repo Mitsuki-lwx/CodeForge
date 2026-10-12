@@ -385,7 +385,9 @@ class Round:
             tail_parts.append(f"{n}个工具 {tools}")
         if elapsed_s is not None:
             tail_parts.append(format_elapsed(elapsed_s))
-        return (head + ("  ·  " + "  ·  ".join(tail_parts) if tail_parts else "")).rstrip()
+        return (
+            head + ("  ·  " + "  ·  ".join(tail_parts) if tail_parts else "")
+        ).rstrip()
 
 
 def _is_system_reminder(m: Any) -> bool:
@@ -511,12 +513,10 @@ def render_round_overview(
 
     lines = [f"本会话 {len(rounds)} 轮（显示最近 {len(shown)} 轮）", _SEP]
     offset = len(rounds) - len(shown)
-    for i, r in enumerate(shown, start=offset + 1):
+    for _i, r in enumerate(shown, start=offset + 1):
         lines.append(r.summary_line(el.get(r.number)))
 
-    lines.append(
-        "  /show <轮次> [--full] [--tools] · /show --tail N · /show --cost"
-    )
+    lines.append("  /show <轮次> [--full] [--tools] · /show --tail N · /show --cost")
     if offset:
         lines.insert(1, f"  （更早的 {offset} 轮未显示：/show --tail {len(rounds)}）")
     return lines

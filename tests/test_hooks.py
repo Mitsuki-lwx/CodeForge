@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -239,8 +240,11 @@ async def test_pre_tool_allow_on_exit_zero(tmp_path):
 
 @pytest.mark.asyncio
 async def test_pre_tool_timeout_fail_open(tmp_path):
+    # 不用 `sleep` —— 那是 Unix 工具，Windows 的 CI runner 上不在 PATH 里。
+    # 用解释器自身睡：两边都成立，且"必然超时"这件事由 0.1s 超时保证。
+    slow = f'"{sys.executable}" -c "import time;time.sleep(2)"'
     runner = HookRunner(
-        rules=[_rule(name="slow", event="pre_tool", command="sleep 2", timeout=0.1)],
+        rules=[_rule(name="slow", event="pre_tool", command=slow, timeout=0.1)],
         cwd=tmp_path,
     )
     blocked, _ = await runner.check_pre_tool(_ctx("pre_tool", tool_name="write_file"))

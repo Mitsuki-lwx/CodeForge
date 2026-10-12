@@ -56,12 +56,14 @@ def analyze_traces(obs_path: Path) -> dict[str, Any]:
             durations[name].append(d)
         attrs = s.get("attributes") or {}
         if name == "chat.completions":
-            genai.append({
-                "model": attrs.get("gen_ai.request.model"),
-                "in": attrs.get("gen_ai.usage.input_tokens"),
-                "out": attrs.get("gen_ai.usage.output_tokens"),
-                "dur_ms": d,
-            })
+            genai.append(
+                {
+                    "model": attrs.get("gen_ai.request.model"),
+                    "in": attrs.get("gen_ai.usage.input_tokens"),
+                    "out": attrs.get("gen_ai.usage.output_tokens"),
+                    "dur_ms": d,
+                }
+            )
         if s.get("attributes", {}).get("success") is False or s.get("status") == 2:
             errors += 1
 
@@ -71,10 +73,14 @@ def analyze_traces(obs_path: Path) -> dict[str, Any]:
         "max_duration_ms": {k: round(max(v), 1) for k, v in durations.items()},
         "slowest": sorted(
             ((name, round(max(v), 1)) for name, v in durations.items()),
-            key=lambda x: x[1], reverse=True,
+            key=lambda x: x[1],
+            reverse=True,
         ),
         "gen_ai_calls": len(genai),
-        "gen_ai_tokens": {"in": sum(g["in"] or 0 for g in genai), "out": sum(g["out"] or 0 for g in genai)},
+        "gen_ai_tokens": {
+            "in": sum(g["in"] or 0 for g in genai),
+            "out": sum(g["out"] or 0 for g in genai),
+        },
         "span_errors": errors,
     }
 
@@ -98,7 +104,9 @@ def analyze_audit(audit_dir: Path, only_session: str | None) -> dict[str, Any]:
             e = ev.get("event")
             if e == "tool_end":
                 tools[ev.get("tool_name", "?")].append(ev.get("duration_ms") or 0)
-                tool_success[("ok" if ev.get("success") else "fail", ev.get("tool_name", "?"))] += 1
+                tool_success[
+                    ("ok" if ev.get("success") else "fail", ev.get("tool_name", "?"))
+                ] += 1
             elif e == "permission":
                 permission_counts[ev.get("decision")] += 1
                 if ev.get("decision") == "deny":
@@ -116,13 +124,17 @@ def analyze_audit(audit_dir: Path, only_session: str | None) -> dict[str, Any]:
     # 慢工具 Top
     slow_tools = sorted(
         ((name, max(v), sum(v) / len(v)) for name, v in tools.items() if v),
-        key=lambda x: x[2], reverse=True,
+        key=lambda x: x[2],
+        reverse=True,
     )
     return {
         "session_files": len(files),
         "tool_calls": sum(len(v) for v in tools.values()),
         "tool_duration_sum_ms": sum(sum(v) for v in tools.values()),
-        "slowest_tools_avg_ms": [{"tool": t, "max_ms": m, "avg_ms": round(a, 1)} for t, m, a in slow_tools[:8]],
+        "slowest_tools_avg_ms": [
+            {"tool": t, "max_ms": m, "avg_ms": round(a, 1)}
+            for t, m, a in slow_tools[:8]
+        ],
         "tool_failures": tool_success,
         "permission": {"deny": permission_denied, "all": dict(permission_counts)},
         "errors": errors,
@@ -166,7 +178,9 @@ def print_report(t: dict, a: dict) -> None:
     print(f"  工具总调用: {a['tool_calls']}  总耗时={a['tool_duration_sum_ms']}ms")
     print(f"  上下文压缩: {a['compactions']} 次")
     print(f"  hook 拦截: {a['hooks_blocked']} 次")
-    print(f"  LLM 调用: {t['gen_ai_calls']}  总token in={t['gen_ai_tokens']['in']} out={t['gen_ai_tokens']['out']}")
+    print(
+        f"  LLM 调用: {t['gen_ai_calls']}  总token in={t['gen_ai_tokens']['in']} out={t['gen_ai_tokens']['out']}"
+    )
 
 
 def main() -> None:

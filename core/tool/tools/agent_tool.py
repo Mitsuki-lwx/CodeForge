@@ -114,7 +114,7 @@ class AgentTool(Tool):
         # 动态追加可用角色列表
         if self._catalog is not None:
             try:
-                roles = self._catalog.list()
+                roles = self._catalog.list_roles()
                 if roles:
                     names = ", ".join(r.name for r in roles if not r.is_fork())
                     base += f" Available types: {names}."
@@ -460,9 +460,7 @@ class AgentTool(Tool):
         # 依旧不需要人按键（不会挂起），但不会越权。
         # 定义式角色子 Agent 尊重其角色声明的权限模式（该契约不变）。
         if is_fork:
-            permission_mode = getattr(
-                parent, "permission_mode", PermissionMode.DEFAULT
-            )
+            permission_mode = getattr(parent, "permission_mode", PermissionMode.DEFAULT)
             dont_ask = False
             child_policy = resolve_child_policy(parent)
         else:
@@ -472,9 +470,7 @@ class AgentTool(Tool):
             # 把它**翻译成策略** `allow_all`，而不是让 `_dont_ask` 与策略两套
             # 机制并存 —— 策略在权限判定里优先，并存会让角色契约静默失效。
             child_policy = (
-                UnattendedPolicy.ALLOW_ALL
-                if dont_ask
-                else resolve_child_policy(parent)
+                UnattendedPolicy.ALLOW_ALL if dont_ask else resolve_child_policy(parent)
             )
         system_prompt = str(getattr(role, "system_prompt", ""))
 
@@ -548,11 +544,7 @@ class AgentTool(Tool):
         # 子 Agent 客户端：默认继承父 client；若模型显式指定为非 'inherit'，
         # 基于父 provider 配置克隆一份并覆盖 model，让子代理真正用指定模型跑。
         parent_client = getattr(parent, "_client", None)
-        if (
-            model
-            and model.lower() not in ("inherit", "")
-            and parent_client is not None
-        ):
+        if model and model.lower() not in ("inherit", "") and parent_client is not None:
             from config.model import ProviderConfig
 
             parent_config = getattr(parent_client, "config", None)
@@ -602,7 +594,11 @@ class AgentTool(Tool):
         真结果文本，因而无需 sleep+ls 轮询（消除本轮 benchmark 发现的 ~72s 空转）。
         结果文本附加防轮询提示，防止后台/超时的场景引导模型误轮询。
         """
-        from core.agent.sub_agent import arming_approval, run_to_completion
+        from core.agent.sub_agent import (
+            arming_approval,
+            linked_cancel,
+            run_to_completion,
+        )
 
         events: asyncio.Queue = asyncio.Queue(maxsize=64)
 
@@ -613,10 +609,24 @@ class AgentTool(Tool):
         #
         # 别再在这里散装设置那三处（通道 / 策略 / dont_ask）—— Skill fork 的
         # fork Agent 就是因为漏设而挂死；新增入口一律调 `arming_approval`。
-        with arming_approval(sub_agent, parent=self._parent):
-            final_text = await run_to_completion(
-                sub_agent, sub_conv, args.prompt, events
-            )
+        with (
+            arming_approval(sub_agent, parent=self._parent),
+            linked_cancel(sub_agent, self._parent),
+        ):
+            try:
+                final_text = await run_to_completion(
+                    sub_agent, sub_conv, args.prompt, events
+                )
+            except asyncio.CancelledError:
+                # 子 Agent 因**父被取消**而中断（`linked_cancel` 把父的 Ctrl-C 传了下去）。
+                # 转成结构化结果，而不是让 CancelledError 继续冒：它继承 BaseException，
+                # `_exec_one` 的 `except Exception` 拦不住，会一路穿到 Lead 的回合里
+                # 变成"回合异常终止"—— 而用户只是按了 Ctrl-C，该看到的是"这步被取消了"，
+                # 然后 Lead 在下一个迭代边界正常收尾。
+                return ToolResult(
+                    success=False,
+                    error=f"子 Agent「{args.name}」已被取消（父回合被中断）",
+                )
         # 子 agent 出错（run_to_completion 返回 "Error: ..."）→ 结构化 success=False，
         # 让 Lead 明确知道委派失败，而非拿到一段错误文本当成功。
         if final_text.startswith("Error:"):

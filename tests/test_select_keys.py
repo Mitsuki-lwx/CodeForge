@@ -31,11 +31,19 @@ class _PipeStdin:
 
 
 def _feed(monkeypatch, chars: str, *, tty: bool = True) -> None:
-    """把 `msvcrt.getwch()` 换成按脚本吐字符的桩，并指定 stdin 是不是 TTY。"""
-    import msvcrt
+    """把 `msvcrt.getwch()` 换成按脚本吐字符的桩，并指定 stdin 是不是 TTY。
 
-    it = iter(chars)
-    monkeypatch.setattr(msvcrt, "getwch", lambda: next(it))
+    `msvcrt` 只在 Windows 上存在；非 Windows 下**不碰它** —— 非 TTY 用例
+    本来就在平台分支之前返回，不该因为"桩准备"这一步而 ImportError。
+    """
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+
+    if msvcrt is not None:
+        it = iter(chars)
+        monkeypatch.setattr(msvcrt, "getwch", lambda: next(it))
     monkeypatch.setattr(sys, "stdin", _TtyStdin() if tty else _PipeStdin())
 
 

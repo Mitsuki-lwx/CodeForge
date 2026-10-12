@@ -29,9 +29,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "command",
         nargs="?",
         default="",
-        help="host（前台起会话宿主）/ runs（列 run）/ attach（查看或继续某个 run）；省略则进 TUI",
+        help=(
+            "host（前台起会话宿主）/ runs（列 run）/ attach（查看或继续某个 run）"
+            "/ mcp（管理 MCP server 配置，如 `mcp add playwright`）；省略则进 TUI"
+        ),
     )
-    p.add_argument("target", nargs="?", default="", help="attach 的 run_id")
+    p.add_argument(
+        "target",
+        nargs="?",
+        default="",
+        help="attach 的 run_id；mcp 子命令的动词（add）",
+    )
+    p.add_argument(
+        "subject",
+        nargs="?",
+        default="",
+        help="mcp 子命令的目标（如 `mcp add playwright` 里的 playwright）",
+    )
     p.add_argument(
         "--continue",
         dest="resume",
@@ -68,8 +82,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,  # None = 未指定；交给 config 的 features.host.unattended_policy
         choices=[pol.value for pol in UnattendedPolicy],
         help=(
-            "host 子命令：无人值守下如何代答 ask 级工具决策。"
-            "省略时取 config 的 features.host.unattended_policy（默认 deny_all）。"
+            "无人值守下如何代答 ask 级工具决策。适用于 `host` 子命令与 `--task` 无头单任务。"
+            "省略时：host 取 config 的 features.host.unattended_policy（默认 deny_all）；"
+            "`--task` 取 deny_all（只读）。"
             "deny_all 一律拒绝（最保守）；allow_write 另放行写文件（需要 agent 改代码时用）；"
             "allow_all 全放；review 由独立审查者逐个判断（见 spec_approval_review）。"
             "只读工具本就不询问、不受本策略影响；"
@@ -134,6 +149,55 @@ def _primary_provider():
     return providers[0]
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    """`codeforge mcp` —— 管理 MCP server 配置。
+
+    只有 `add <name>`：把一个**安全默认**的 server 模板写进用户级
+    `~/.codeforge/mcp.json`。刻意不写项目级 —— 那份配置默认不被信任
+    （见 `core/mcp/config.py`），写进去只会让下次启动看到"已跳过"。
+    """
+    from core.mcp.config import USER_CONFIG_PATH, add_user_server
+    from core.mcp.templates import TEMPLATES, describe_flags
+
+    target = args.target or ""
+    if not target:
+        print("用法：codeforge mcp add <server>")
+        print(f"可用模板：{', '.join(sorted(TEMPLATES)) or '(无)'}")
+        return 2
+    if target != "add":
+        print(f"未知 mcp 子命令：{target!r}（目前只有 `add`）")
+        return 2
+
+    server = (args.subject or "").strip()
+    if not server:
+        print("用法：codeforge mcp add <server>")
+        print(f"可用模板：{', '.join(sorted(TEMPLATES)) or '(无)'}")
+        return 2
+
+    factory = TEMPLATES.get(server)
+    if factory is None:
+        print(
+            f"没有 '{server}' 这个模板。可用：{', '.join(sorted(TEMPLATES)) or '(无)'}"
+        )
+        return 2
+
+    cfg = factory()
+    try:
+        path = add_user_server(server, cfg)
+    except ValueError as e:
+        print(f"写入失败：{e}")
+        return 1
+
+    print(f"已把 MCP server '{server}' 写入 {path}")
+    print(f"  command: {cfg['command']} {' '.join(cfg['args'])}")
+    print("参数为什么这么给：")
+    for line in describe_flags(cfg):
+        print(f"  {line}")
+    print(f"\n该文件当前内容：\n{USER_CONFIG_PATH.read_text(encoding='utf-8')}")
+    print("下次启动 codeforge 即生效；用 /mcp 查看已加载的工具。")
+    return 0
+
+
 def _cmd_runs() -> int:
     """`codeforge runs` —— 列出 run（run_id / session / status / 时间）。"""
     from core.host import RunLifecycle, RunStore
@@ -149,7 +213,9 @@ def _cmd_runs() -> int:
 
     print(f"{'RUN_ID':<34} {'SESSION':<26} {'STATUS':<12} 时间")
     for r in runs:
-        print(f"{r.id:<34} {r.session_id:<26} {r.status.value:<12} {_fmt_ts(r.updated_at)}")
+        print(
+            f"{r.id:<34} {r.session_id:<26} {r.status.value:<12} {_fmt_ts(r.updated_at)}"
+        )
     if stale:
         print(f"\n（启动时把 {len(stale)} 个僵尸 run 改判为 interrupted）")
     print(f"\n共 {len(runs)} 个 run。查看详情：codeforge attach <run_id>")
@@ -244,7 +310,9 @@ def _print_conversation(payload: dict, limit: int = 8) -> None:
     """打印对话摘要（尾部若干条）。字段缺失时降级显示，不抛栈。"""
     messages = payload.get("messages") or []
     total = payload.get("total")
-    print(f"\n对话摘要（共 {total if total is not None else len(messages)} 条，显示末尾 {len(messages)} 条）：")
+    print(
+        f"\n对话摘要（共 {total if total is not None else len(messages)} 条，显示末尾 {len(messages)} 条）："
+    )
     if not messages:
         print("  （空）")
         return
@@ -288,7 +356,9 @@ async def _attach_async(workspace: Path, record, args: argparse.Namespace) -> in
         client.close()
 
 
-async def _continue_run(client, record, args: argparse.Namespace, workspace: Path) -> int:
+async def _continue_run(
+    client, record, args: argparse.Namespace, workspace: Path
+) -> int:
     """继续该 run。
 
     **不自动重跑**是本条的硬要求（spec §128、checklist「不自动重跑」）：继续只是往
@@ -309,7 +379,9 @@ async def _continue_run(client, record, args: argparse.Namespace, workspace: Pat
             print(f"    tool_use_id = {item.tool_use_id}")
             if item.summary:
                 print(f"    上次返回：{item.summary[:100]}")
-        print("  需要重跑请自己判断后手动发起——写操作重放未必等价（追加、并发、外部副作用）。")
+        print(
+            "  需要重跑请自己判断后手动发起——写操作重放未必等价（追加、并发、外部副作用）。"
+        )
     else:
         print("该会话没有「已执行但结果未落盘」的调用，从这里继续是安全的。")
 
@@ -326,7 +398,9 @@ async def _continue_run(client, record, args: argparse.Namespace, workspace: Pat
     from core.host import RunStatus
 
     if record.status is RunStatus.INTERRUPTED:
-        print(f"\n上一个 run {record.id} 是 interrupted（通常是被强杀），会话内容仍完整。")
+        print(
+            f"\n上一个 run {record.id} 是 interrupted（通常是被强杀），会话内容仍完整。"
+        )
 
     # 首期是「单活跃 run」：host 只承载它自己那条 run。如果用户给的是历史 run，
     # 继续实际上发生在当前活跃 run 上——这必须说出来，不能默默跨 run/跨会话执行。
@@ -353,9 +427,14 @@ async def _continue_run(client, record, args: argparse.Namespace, workspace: Pat
                 print(f"\n[工具] {data.get('name')} 开始", flush=True)
             elif name == "ToolCallFinished":
                 mark = "完成" if data.get("success") else "失败"
-                print(f"[工具] {data.get('name')} {mark}（{data.get('duration_ms', 0)}ms）", flush=True)
+                print(
+                    f"[工具] {data.get('name')} {mark}（{data.get('duration_ms', 0)}ms）",
+                    flush=True,
+                )
             elif name == "AgentFinished":
-                print(f"\n\n回合结束（{data.get('iterations', 0)} 轮，{data.get('elapsed_s', 0)}s）")
+                print(
+                    f"\n\n回合结束（{data.get('iterations', 0)} 轮，{data.get('elapsed_s', 0)}s）"
+                )
                 return 0
             elif name == "AgentError":
                 print(f"\n\n回合出错：{data.get('message') or data.get('code')}")
@@ -442,7 +521,9 @@ def _cmd_host(args: argparse.Namespace) -> int:
         print(f"run_id = {server.run.id}")
         print(f"session = {server.run.session_id}")
         print(f"无人值守策略 = {policy}（ask 级工具决策按此代答）")
-        print("另一个终端可用 `codeforge runs` / `codeforge attach <run_id>`；Ctrl-C 停止。")
+        print(
+            "另一个终端可用 `codeforge runs` / `codeforge attach <run_id>`；Ctrl-C 停止。"
+        )
 
         # Ctrl-C 走"请求优雅关闭"而不是让 asyncio 取消等待：取消会把 run 落成
         # interrupted，而用户主动停 host 是正常结束（completed）。Windows 上
@@ -494,9 +575,11 @@ def main() -> None:
         sys.exit(_cmd_runs())
     if args.command == "attach":
         sys.exit(_cmd_attach(args))
+    if args.command == "mcp":
+        sys.exit(_cmd_mcp(args))
     if args.command:
         print(f"未知子命令：{args.command!r}")
-        print("可用：host / runs / attach <run_id>")
+        print("可用：host / runs / attach <run_id> / mcp add <server>")
         sys.exit(2)
 
     if args.team_member:
@@ -506,9 +589,14 @@ def main() -> None:
         run_team_member_entry(args)
         return
 
-    from tui.app import run
+    from tui.session import run
 
-    run(task=args.task, loop=args.loop, host=args.host)
+    run(
+        task=args.task,
+        loop=args.loop,
+        host=args.host,
+        unattended_policy=args.unattended_policy,
+    )
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from benchmark.evaluators.quality import evaluate_quality, quality
 
-
 CLEAN = (
     "def add_and_mul(a, b):\n"
     "    return (a + b) * (a - b)\n"
@@ -29,7 +28,11 @@ def test_clean_product_scores_1(tmp_path: Path):
 
 
 def test_huge_function_deducts(tmp_path: Path):
-    long_fn = "def big(x):\n" + "".join(f"    a{i} = x + {i}\n" for i in range(60)) + "    return x\n"
+    long_fn = (
+        "def big(x):\n"
+        + "".join(f"    a{i} = x + {i}\n" for i in range(60))
+        + "    return x\n"
+    )
     _write(tmp_path, "big.py", long_fn)
     r = quality(str(tmp_path), {})
     assert r["value"] < 1.0
@@ -48,10 +51,7 @@ def test_high_cyclomatic_deducts(tmp_path: Path):
 
 
 def test_magic_number_reuse(tmp_path: Path):
-    src = ("def f(x):\n"
-           "    return x + 12\n"
-           "def g(x):\n"
-           "    return x * 12 + 12\n")
+    src = "def f(x):\n    return x + 12\ndef g(x):\n    return x * 12 + 12\n"
     _write(tmp_path, "magic.py", src)
     r = quality(str(tmp_path), {})
     assert any("魔法数" in i and "12" in i for i in r["issues"])

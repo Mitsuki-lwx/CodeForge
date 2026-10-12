@@ -24,6 +24,7 @@ SNAKE_RE = None  # 在 `_name_ok` 里用正则
 def _import_snake():
     global SNAKE_RE
     import re
+
     if SNAKE_RE is None:
         SNAKE_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
     return SNAKE_RE
@@ -82,8 +83,11 @@ def quality(cwd: str | None, seed_files: dict) -> dict:
         # magic number：跨整文件统计复用 > MAGIC_MIN_REUSE 的裸数值字面量
         literals: dict[Any, int] = {}
         for n in ast.walk(tree):
-            if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) \
-                    and not isinstance(n.value, bool):
+            if (
+                isinstance(n, ast.Constant)
+                and isinstance(n.value, (int, float))
+                and not isinstance(n.value, bool)
+            ):
                 literals[n.value] = literals.get(n.value, 0) + 1
 
         for fn in ast.walk(tree):
@@ -93,12 +97,18 @@ def quality(cwd: str | None, seed_files: dict) -> dict:
             if not _import_snake().match(fn.name):
                 issues.append(f"{p.name}:{fn.lineno} {fn.name} 非蛇形命名")
             if _num_source_lines(fn.body) > MAX_FUNCTION_LINES:
-                issues.append(f"{p.name}:{fn.lineno} {fn.name} 超 {MAX_FUNCTION_LINES} 行")
+                issues.append(
+                    f"{p.name}:{fn.lineno} {fn.name} 超 {MAX_FUNCTION_LINES} 行"
+                )
             if _cyclomatic(fn) > MAX_CYCLOMATIC:
-                issues.append(f"{p.name}:{fn.lineno} {fn.name} 圈复杂度 {_cyclomatic(fn)}>10")
+                issues.append(
+                    f"{p.name}:{fn.lineno} {fn.name} 圈复杂度 {_cyclomatic(fn)}>10"
+                )
 
         for lit, n in literals.items():
-            if n > MAGIC_MIN_REUSE and not (isinstance(lit, int) and abs(lit) in (0, 1)):
+            if n > MAGIC_MIN_REUSE and not (
+                isinstance(lit, int) and abs(lit) in (0, 1)
+            ):
                 issues.append(f"{p.name}: 魔法数 {lit!r} 复用 {n} 次")
 
     distinct = sorted(set(issues))

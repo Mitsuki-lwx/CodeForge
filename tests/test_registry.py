@@ -6,7 +6,6 @@ import pytest
 
 from core.tool.context import ExecutionContext
 from core.tool.errors import ToolNotFoundError
-from core.tool.interface import Tool
 from core.tool.registry import ToolRegistry
 from core.tool.result import ToolResult
 from tests.test_tool_interface import _ConcreteTool

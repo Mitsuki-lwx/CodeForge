@@ -171,7 +171,7 @@ def test_catalog_resolve_and_list():
     cat._add_all(builtin_roles())
     assert cat.resolve("Explore") is not None
     assert cat.resolve("nonexistent") is None
-    assert len(cat.list()) == 4
+    assert len(cat.list_roles()) == 4
     assert cat.fork_role().is_fork()
 
 
@@ -226,9 +226,7 @@ def test_load_catalog_invalid_file_skipped(tmp_path: Path):
     proj_dir = tmp_path / ".codeforge" / "agents"
     proj_dir.mkdir(parents=True)
     (proj_dir / "bad.md").write_bytes(b"this is not a valid role file\n")
-    (proj_dir / "good.md").write_bytes(
-        b"---\nname: good\ndescription: ok\n---\nbody\n"
-    )
+    (proj_dir / "good.md").write_bytes(b"---\nname: good\ndescription: ok\n---\nbody\n")
     cat = load_catalog(str(tmp_path))
     assert cat.resolve("good") is not None  # 好文件被加载
     assert cat.resolve("bad") is None  # 坏文件被跳过
@@ -236,7 +234,7 @@ def test_load_catalog_invalid_file_skipped(tmp_path: Path):
 
 def test_load_catalog_empty_dir(tmp_path: Path):
     cat = load_catalog(str(tmp_path))
-    assert len(cat.list()) == 4  # 只有内置（含 Coder）
+    assert len(cat.list_roles()) == 4  # 只有内置（含 Coder）
 
 
 # ── Fork 辅助 ──────────────────────────────────────────────────────
@@ -264,8 +262,11 @@ def test_build_forked_unpaired_tool_use():
     parent = [
         Message(role=MessageRole.USER, content="run it"),
         Message(
-            role=MessageRole.ASSISTANT, content="", tool_use_id="tu1",
-            tool_name="bash", tool_input={"command": "ls"},
+            role=MessageRole.ASSISTANT,
+            content="",
+            tool_use_id="tu1",
+            tool_name="bash",
+            tool_input={"command": "ls"},
         ),
     ]
     msgs = build_forked_messages(parent, "fork task")
@@ -292,8 +293,16 @@ def test_agent_disallowed_constant():
 
 
 def test_async_allowed_constant():
-    for t in ("read_file", "write_file", "edit_file", "glob", "grep", "bash",
-              "load_skill", "install_skill"):
+    for t in (
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "bash",
+        "load_skill",
+        "install_skill",
+    ):
         assert t in ASYNC_AGENT_ALLOWED_TOOLS
 
 
@@ -321,9 +330,7 @@ def test_filter_mcp_kept_in_background():
 
 def test_filter_blacklist():
     tools = ["read_file", "bash", "write_file"]
-    result = apply_agent_tool_filter(
-        FilterParams(all=tools, disallowed=["bash"])
-    )
+    result = apply_agent_tool_filter(FilterParams(all=tools, disallowed=["bash"]))
     assert "bash" not in result
     assert "read_file" in result
 

@@ -30,7 +30,10 @@ async def test_e2e_normal_workflow(tmp_root):
     r2 = await reg.execute(
         "edit_file",
         ctx,
-        {"file_path": str(f), "edits": [{"old_string": "Hello", "new_string": "World"}]},
+        {
+            "file_path": str(f),
+            "edits": [{"old_string": "Hello", "new_string": "World"}],
+        },
     )
     assert r2.success is True
 
@@ -89,8 +92,28 @@ async def test_e2e_bash_and_grep(tmp_root):
 
 
 @pytest.mark.asyncio
-async def test_e2e_get_default_registry_has_seven_tools():
+async def test_e2e_get_default_registry_exposes_the_builtin_set():
+    """默认注册表的**内容**是契约：多一个要显式加，少一个就是回归。
+
+    这条刻意写成精确集合而不是 `>=`：`get_default_registry()` 是测试、基准与
+    最小 Agent 共用的入口，工具悄悄消失（改名、没注册）比多一个更危险。
+    """
     reg = get_default_registry()
-    tools = reg.list()
-    names = {t.name() for t in tools}
-    assert names == {"read_file", "write_file", "edit_file", "bash", "glob", "grep", "ExitPlanMode"}
+    names = {t.name() for t in reg.list()}
+    assert names == {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "bash",
+        "bash_output",
+        "kill_shell",
+        "glob",
+        "grep",
+        "browser_snapshot",
+        "browser_eval",
+        "browser_screenshot",
+        "browser_diff",
+        "web_fetch",
+        "web_search",
+        "ExitPlanMode",
+    }

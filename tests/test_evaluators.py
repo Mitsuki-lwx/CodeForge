@@ -31,12 +31,9 @@ def test_regex_miss():
 
 
 def test_pytest_pass(tmp_path: Path):
-    (tmp_path / "calc.py").write_text(
-        "def add(a,b): return a+b\n", encoding="utf-8"
-    )
+    (tmp_path / "calc.py").write_text("def add(a,b): return a+b\n", encoding="utf-8")
     (tmp_path / "test_calc.py").write_text(
-        "from calc import add\n"
-        "def test_add(): assert add(1,2)==3\n",
+        "from calc import add\ndef test_add(): assert add(1,2)==3\n",
         encoding="utf-8",
     )
     item = {"name": "x", "metric": "pytest_pass"}

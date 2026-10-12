@@ -12,18 +12,21 @@ from typing import Any
 @dataclass
 class TextChunk:
     """正文文本增量片段。"""
+
     text: str
 
 
 @dataclass
 class ThinkingChunk:
     """模型扩展思考（reasoning）文本增量片段。"""
+
     text: str
 
 
 @dataclass
 class ToolUse:
     """工具调用信号（在流结束前发出，携带完整 tool_use 信息）。"""
+
     id: str
     name: str
     input: dict[str, Any]
@@ -32,6 +35,7 @@ class ToolUse:
 @dataclass
 class CompletionDone:
     """流式回复结束信号。"""
+
     usage: dict[str, Any] | None = None
     stop_reason: str | None = None
     cache_creation_input_tokens: int = 0
@@ -43,6 +47,7 @@ class CompletionDone:
 @dataclass
 class StreamError:
     """流式过程中发生的错误。"""
+
     message: str
     code: str | None = None
 

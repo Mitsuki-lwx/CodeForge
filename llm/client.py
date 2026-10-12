@@ -109,14 +109,20 @@ class LLMClient(ABC):
         self.config = config
 
     @abstractmethod
-    async def stream_chat(
+    def stream_chat(
         self,
         messages: list[APIMessage],
         system_prompt: str = "",
         tools: list[dict[str, Any]] | None = None,
         system_blocks: Any = None,  # PromptAssembly | None
     ) -> AsyncGenerator[StreamEvent, None]:
-        """向 LLM 发起流式对话请求（契约见各子类/测试）。"""
+        """流式对话。
+
+        ⚠️ 这里是**普通 def 返回异步生成器**，不是 `async def`。
+        声明成 `async def` 会让签名变成"协程 → 异步生成器"，与实际实现
+        （各 Client 都是 `def ... -> AsyncGenerator`）不符，读接口的人会以为
+        要先 `await` 再 `async for`（mypy 也据此报 `has no attribute "__aiter__"`）。
+        """
         ...
 
     @classmethod

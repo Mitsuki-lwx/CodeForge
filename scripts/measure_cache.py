@@ -45,7 +45,6 @@ from core.prompts.builder import PromptBuilder
 from llm.client import LLMClient
 from llm.stream_events import CompletionDone, StreamError
 
-
 # ── 代表性工具定义（仅作稳定前缀，内容不影响缓存结论）────────────────
 _TOOL_DEFS = [
     {
@@ -121,7 +120,10 @@ _TOOL_DEFS = [
         "description": "Delegate a subtask to a sub-agent.",
         "input_schema": {
             "type": "object",
-            "properties": {"prompt": {"type": "string"}, "agent_type": {"type": "string"}},
+            "properties": {
+                "prompt": {"type": "string"},
+                "agent_type": {"type": "string"},
+            },
             "required": ["prompt"],
         },
     },
@@ -178,7 +180,9 @@ async def _one_round(client: LLMClient, assembly, messages: list[APIMessage]) ->
             cache_creation = ev.cache_creation_input_tokens
     return {
         "input": int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
-        "output": int(usage.get("output_tokens") or usage.get("completion_tokens") or 0),
+        "output": int(
+            usage.get("output_tokens") or usage.get("completion_tokens") or 0
+        ),
         "cache_read": int(cache_read),
         "cache_creation": int(cache_creation),
     }
@@ -195,14 +199,20 @@ def _hit(protocol: str, r: dict) -> tuple[int, int]:
 
 async def _run(provider: ProviderConfig, rounds: int) -> None:
     client = LLMClient.create(provider)
-    builder = PromptBuilder(model=provider.model, instructions=_INSTRUCTIONS, memory=_MEMORY_INDEX)
+    builder = PromptBuilder(
+        model=provider.model, instructions=_INSTRUCTIONS, memory=_MEMORY_INDEX
+    )
     assembly = builder.build_full(env_info=_ENV_INFO, tool_defs=_TOOL_DEFS)
 
     print(f"\n== 测量 {provider.name} ({provider.protocol}, {provider.model}) ==")
-    print(f"   稳定前缀（cached 块）约 {sum(len(b.content) for b in assembly.cached)} 字符")
+    print(
+        f"   稳定前缀（cached 块）约 {sum(len(b.content) for b in assembly.cached)} 字符"
+    )
     print(f"   连发 {rounds} 轮完全相同的请求…\n")
 
-    message = APIMessage(role="user", content="请列出当前项目的核心模块，并说明各自的职责。")
+    message = APIMessage(
+        role="user", content="请列出当前项目的核心模块，并说明各自的职责。"
+    )
     results = []
     for i in range(rounds):
         r = await _one_round(client, assembly, [message])
@@ -245,7 +255,9 @@ async def _main() -> None:
                 provider = p
                 break
         else:
-            print(f"未找到 provider '{args.provider}'，可用: {[p.name for p in providers]}")
+            print(
+                f"未找到 provider '{args.provider}'，可用: {[p.name for p in providers]}"
+            )
             sys.exit(1)
 
     await _run(provider, max(2, args.rounds))

@@ -120,9 +120,7 @@ def test_normal_content_untouched(tmp_path) -> None:
 # ── §6 脱敏失败必须可发现、且不写明文 ─────────────────────────
 
 
-def test_redaction_failure_drops_content_and_marks_error(
-    tmp_path, monkeypatch
-) -> None:
+def test_redaction_failure_drops_content_and_marks_error(tmp_path, monkeypatch) -> None:
     """脱敏抛异常 ⇒ 不写明文，且留下 `redact_error` 痕迹。"""
     import core.trace.writer as wmod
 
@@ -146,11 +144,16 @@ def test_redaction_failure_keeps_structural_fields(tmp_path, monkeypatch) -> Non
     """降级行仍保留可用的结构信息（不只剩一个 error）。"""
     import core.trace.writer as wmod
 
-    monkeypatch.setattr(wmod, "redact_mapping", lambda _d: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(
+        wmod, "redact_mapping", lambda _d: (_ for _ in ()).throw(RuntimeError("x"))
+    )
 
     w = TraceWriter("s8", audit_dir=tmp_path)
-    w.record(ToolEndEvent(tool_name="Bash", success=False, duration_ms=42,
-                          result_preview=_secret()))
+    w.record(
+        ToolEndEvent(
+            tool_name="Bash", success=False, duration_ms=42, result_preview=_secret()
+        )
+    )
     w.close()
 
     row = _lines(_p(tmp_path, "s8"))[0]

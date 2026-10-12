@@ -117,7 +117,7 @@ async def test_ptl_not_retried(monkeypatch):
     s = Session(_PTLAdapter(), max_retries=2, retry_delay=0.01)
     try:
         await _collect(s)
-        assert False, "应抛 PromptTooLongError"
+        raise AssertionError("应抛 PromptTooLongError")
     except PromptTooLongError:
         pass
     assert len(calls) == 1  # PTL 不重试

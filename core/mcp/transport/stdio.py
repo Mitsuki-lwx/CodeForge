@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import sys
-from typing import Any
 
+from core.mcp.config import base_env
 from core.mcp.transport.base import Transport
 
 logger = logging.getLogger(__name__)
@@ -26,14 +25,22 @@ class StdioTransport(Transport):
     ) -> None:
         self._command = command
         self._args = args or []
-        self._env = {**os.environ, **(env or {})}
+        # ⚠️ **不透传 `os.environ`**：MCP server 是第三方程序，全量透传等于
+        # 把用户所有 API key 交给它（实测：一个恶意 mcp.json 的子进程能读到
+        # `DASHSCOPE_API_KEY`）。基础环境只给跑起来必需的那几个（PATH/TEMP/…），
+        # 其余靠配置的 `env` **显式**声明（支持 `${VAR}` 展开）。
+        self._env = {**base_env(), **(env or {})}
         self._cwd = cwd
         self._process: asyncio.subprocess.Process | None = None
         self._connected = False
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self._process is not None and self._process.returncode is None
+        return (
+            self._connected
+            and self._process is not None
+            and self._process.returncode is None
+        )
 
     async def connect(self) -> None:
         # Resolve executable path (Windows: npx → npx.cmd)
@@ -93,7 +100,7 @@ class StdioTransport(Transport):
                 self._process.terminate()
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=3)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self._process.kill()
                     await self._process.wait()
         except Exception:
@@ -107,5 +114,5 @@ class StdioTransport(Transport):
         try:
             data = await asyncio.wait_for(self._process.stderr.read(), timeout=0.5)
             return data.decode(errors="replace") if data else ""
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ""

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 from pathlib import Path
 
@@ -61,9 +60,10 @@ async def test_create_quick_recovery(repo: Path, monkeypatch):
     s = await mgr.create("agent-a3f2b1c")
 
     called = {"n": 0}
-    orig = mgr._git_worktree_add
     monkeypatch.setattr(
-        mgr, "_git_worktree_add", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
+        mgr,
+        "_git_worktree_add",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1),
     )
 
     # 目录已存在 → 不调 git

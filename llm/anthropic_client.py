@@ -1,10 +1,10 @@
 """Anthropic Messages 协议客户端。
 
 薄委托层：持有 .config，按其协商出的 Anthropic Session 执行流式对话。
-wire 封装/解析已迁至 llm.adapters.anthropic。
+wire 封装/解析在 llm.adapters.anthropic。
 
-`AnthropicClient` 名称、构造函数 (config)、`.config`、`stream_chat` 签名均保持，
-`DEFAULT_ANTHROPIC_BASE_URL` / `_format_tool` 从适配器 re-export 以兼容测试。
+适配器注册表按**字符串**引用本类（`client="llm.anthropic_client.AnthropicClient"`），
+所以这个模块名与类名是协议的一部分，不能随意改。
 """
 
 from __future__ import annotations
@@ -14,20 +14,12 @@ from typing import Any
 
 from config.model import ProviderConfig
 from conversation.message import APIMessage
-from llm.adapters.anthropic import (
-    DEFAULT_ANTHROPIC_BASE_URL,
-    AnthropicAdapter,
-    _format_tool,
-)
+from llm.adapters.anthropic import AnthropicAdapter
 from llm.client import LLMClient
 from llm.session import Session
 from llm.stream_events import StreamEvent
 
-__all__ = [
-    "DEFAULT_ANTHROPIC_BASE_URL",
-    "AnthropicClient",
-    "_format_tool",
-]
+__all__ = ["AnthropicClient"]
 
 
 class AnthropicClient(LLMClient):

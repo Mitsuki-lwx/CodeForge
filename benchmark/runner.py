@@ -128,7 +128,11 @@ def _dataset_item_id(client, dataset_name: str, item_name: str) -> str | None:
     """从 Langfuse 数据集里查一条 item 的 id；无则 None。"""
     ds = client.get_dataset(dataset_name)
     for it in ds.items:
-        if it.input and isinstance(it.input, dict) and it.input.get("name") == item_name:
+        if (
+            it.input
+            and isinstance(it.input, dict)
+            and it.input.get("name") == item_name
+        ):
             return it.id
     return None
 
@@ -235,27 +239,40 @@ def _record_item(
 
     # 打分：ground-truth deterministric score + usage + 耗时
     client.create_score(
-        name=score["name"], value=score["value"], trace_id=trace_id,
-        comment=score["comment"], metadata={"variant": variant, "item": item_name},
+        name=score["name"],
+        value=score["value"],
+        trace_id=trace_id,
+        comment=score["comment"],
+        metadata={"variant": variant, "item": item_name},
         config_id=SCORE_CONFIG_IDS.get(score["name"]),
         data_type="NUMERIC",
     )
     usage = result.get("usage") or {}
-    for key, sname in (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens")):
+    for key, sname in (
+        ("input_tokens", "input_tokens"),
+        ("output_tokens", "output_tokens"),
+    ):
         if usage.get(key) is not None:
             client.create_score(
-                name=sname, value=int(usage[key]), trace_id=trace_id,
+                name=sname,
+                value=int(usage[key]),
+                trace_id=trace_id,
                 metadata={"variant": variant, "item": item_name},
             )
     client.create_score(
-        name="elapsed_s", value=float(result["elapsed_s"]), trace_id=trace_id,
+        name="elapsed_s",
+        value=float(result["elapsed_s"]),
+        trace_id=trace_id,
         metadata={"variant": variant, "item": item_name},
     )
     if ds_run_id:
         client.create_score(
-            name="avg_" + score["name"], value=score["value"],
-            dataset_run_id=ds_run_id, comment=f"{item_name} {score['comment']}",
-            config_id=SCORE_CONFIG_IDS.get(score["name"]), data_type="NUMERIC",
+            name="avg_" + score["name"],
+            value=score["value"],
+            dataset_run_id=ds_run_id,
+            comment=f"{item_name} {score['comment']}",
+            config_id=SCORE_CONFIG_IDS.get(score["name"]),
+            data_type="NUMERIC",
         )
 
 
@@ -281,10 +298,15 @@ def _record_multi(client, variant: str, item: dict, result: dict, dims: dict) ->
         if key == "semantic" and gate < 1.0:
             value = round(value * gate, 3)
         client.create_score(
-            name=name, value=value, trace_id=trace_id,
+            name=name,
+            value=value,
+            trace_id=trace_id,
             comment=d.get("comment", ""),
-            metadata={"variant": variant, "item": item_name,
-                      "over": bool(eff.get("over"))},
+            metadata={
+                "variant": variant,
+                "item": item_name,
+                "over": bool(eff.get("over")),
+            },
             config_id=EVAL_CONFIG_IDS.get(name),
             data_type="NUMERIC",
         )
@@ -323,7 +345,9 @@ def print_table(results: list[dict[str, Any]], variant: str) -> None:
         table.add_row(
             r["name"],
             r.get("score_comment", ""),
-            f"{r['score_value']:.2f}" if isinstance(r["score_value"], float) else str(r["score_value"]),
+            f"{r['score_value']:.2f}"
+            if isinstance(r["score_value"], float)
+            else str(r["score_value"]),
             _dim_cell(dims, "semantic"),
             _dim_cell(dims, "conformance"),
             _dim_cell(dims, "quality"),

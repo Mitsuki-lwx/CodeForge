@@ -155,8 +155,7 @@ def test_host_config_reads_enabled(tmp_path):
     cfg = load_host_config(
         _write_config(
             tmp_path,
-            MINIMAL_CONFIG
-            + "\nfeatures:\n  host:\n    enabled: true\n"
+            MINIMAL_CONFIG + "\nfeatures:\n  host:\n    enabled: true\n"
             "    port: 45678\n    unattended_policy: allow_write\n",
         )
     )
@@ -320,7 +319,10 @@ def test_render_frame_maps_streaming_events():
     assert _render_frame(renderer, console, "ThinkingDelta", {"text": "hmm"}) is False
     assert (
         _render_frame(
-            renderer, console, "ToolCallStarted", {"name": "bash", "input": {"cmd": "ls"}}
+            renderer,
+            console,
+            "ToolCallStarted",
+            {"name": "bash", "input": {"cmd": "ls"}},
         )
         is False
     )
@@ -362,7 +364,9 @@ def test_render_frame_turn_end_events(name, data):
 
 def test_render_frame_ignores_unknown_events():
     """不认识的事件（IterationUpdate 等）不渲染也不结束回合。"""
-    assert _render_frame(_RecordingRenderer(), _console(), "IterationUpdate", {}) is False
+    assert (
+        _render_frame(_RecordingRenderer(), _console(), "IterationUpdate", {}) is False
+    )
 
 
 # ── 交互循环 ────────────────────────────────────────────────────

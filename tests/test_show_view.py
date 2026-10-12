@@ -30,7 +30,10 @@ def _agent(text: str) -> Message:
 
 def _tool(tid: str, name: str, args: dict) -> Message:
     return Message(
-        role=MessageRole.ASSISTANT, content="", tool_use_id=tid, tool_name=name,
+        role=MessageRole.ASSISTANT,
+        content="",
+        tool_use_id=tid,
+        tool_name=name,
         tool_input=args,
     )
 
@@ -94,8 +97,13 @@ def test_blank_user_message_does_not_start_a_round() -> None:
 
 def test_round_tool_count_counts_calls_not_results() -> None:
     r = split_rounds(
-        [_user("a"), _tool("t1", "Grep", {}), _result("t1", "x"), _tool("t2", "Edit", {}),
-         _result("t2", "y")]
+        [
+            _user("a"),
+            _tool("t1", "Grep", {}),
+            _result("t1", "x"),
+            _tool("t2", "Edit", {}),
+            _result("t2", "y"),
+        ]
     )[0]
     assert r.tool_count == 2, "结果消息不算调用"
     assert r.tool_names == ["Grep", "Edit"]
@@ -198,7 +206,12 @@ def test_only_tools_filters_dialogue_but_keeps_the_question() -> None:
     ★ 刻意如此：不留这行的话，用户看到一串工具调用却不知道自己问的是什么 ——
     而"知道自己问了什么"正是 `/show` 要补的信息缺失（spec §1.1）。
     """
-    msgs = [_user("问题在这里"), _tool("t1", "Grep", {}), _result("t1", "out"), _agent("回答")]
+    msgs = [
+        _user("问题在这里"),
+        _tool("t1", "Grep", {}),
+        _result("t1", "out"),
+        _agent("回答"),
+    ]
     out = "\n".join(render_session_transcript(msgs, index=1, only_tools=True))
     assert "Grep" in out and "out" in out
     assert "问：问题在这里" in out, "头部应保留问题摘要"
@@ -290,7 +303,9 @@ def test_overview_accepts_elapsed_per_round() -> None:
 
 def test_cost_summary_shows_tokens_and_tools() -> None:
     out = "\n".join(
-        render_cost_summary(tokens_in=1234, tokens_out=567, tool_calls=8, elapsed_s=83.0)
+        render_cost_summary(
+            tokens_in=1234, tokens_out=567, tool_calls=8, elapsed_s=83.0
+        )
     )
     assert "1,234" in out and "567" in out
     assert "1,801" in out  # 1234 + 567

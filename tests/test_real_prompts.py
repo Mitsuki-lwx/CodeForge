@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 
 # Add project root
@@ -26,8 +25,8 @@ from conversation.manager import ConversationManager
 from core.agent import Agent, AgentConfig
 from core.agent.events import (
     AgentError,
-    AgentFinished,
     AgentEvent,
+    AgentFinished,
     IterationUpdate,
     TextDelta,
     ToolCallFinished,
@@ -84,11 +83,11 @@ async def run_prompt(
                     usage = e.total_usage
                     print(
                         f"\n{DIM}({e.elapsed_s:.1f}s, {e.iterations}r, "
-                        f"in:{usage.get('input_tokens',0)} out:{usage.get('output_tokens',0)}t){RST}"
+                        f"in:{usage.get('input_tokens', 0)} out:{usage.get('output_tokens', 0)}t){RST}"
                     )
                 elif isinstance(e, AgentError):
                     print(f"\n  x {e.message} ({e.code})")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print(f"\n  x TIMEOUT after {timeout}s")
     print()
     return events
@@ -147,22 +146,28 @@ def check_c_plan_mode_toggle(
     if not p["full_text"].strip():
         return False, "Plan request: No text response"
     # Check: no write tools were executed (all tool calls should be read-only)
-    write_finished = [
-        e for e in plan_response
-        if isinstance(e, ToolCallFinished) and not e.success and "blocked" in e.result_preview.lower()
+    # 被权限层拦下的写操作是**正常**的（plan mode 就该拦），但不允许任何写操作真的成功。
+    write_tools = {"write_file", "edit_file"}
+    successful_writes = [
+        e
+        for e in plan_response
+        if isinstance(e, ToolCallFinished) and e.success and e.name in write_tools
     ]
-    # Having blocked writes is fine (permission layer), but no successful writes should happen
+    if successful_writes:
+        names = ", ".join(e.name for e in successful_writes)
+        return False, f"Plan request: write tools succeeded in plan mode: {names}"
 
     # Toggle OFF
     if not _summarize(toggle_off)["finished"]:
         return False, "Toggle OFF: No AgentFinished"
 
-    return True, f"Toggle ON→plan({p['iterations']}r,{p['tool_started']} tools)→Toggle OFF"
+    return (
+        True,
+        f"Toggle ON→plan({p['iterations']}r,{p['tool_started']} tools)→Toggle OFF",
+    )
 
 
-def check_d_auto_detect(
-    events: list[AgentEvent], agent_mode: str
-) -> tuple[bool, str]:
+def check_d_auto_detect(events: list[AgentEvent], agent_mode: str) -> tuple[bool, str]:
     """Scenario D: Natural language triggers auto plan mode detection."""
     s = _summarize(events)
     if agent_mode != "plan":
@@ -171,7 +176,10 @@ def check_d_auto_detect(
         return False, f"No AgentFinished (errors: {s['errors']})"
     if not s["full_text"].strip():
         return False, "No text response"
-    return True, f"Auto-detected plan mode, {s['iterations']}r, {s['tool_started']} tools"
+    return (
+        True,
+        f"Auto-detected plan mode, {s['iterations']}r, {s['tool_started']} tools",
+    )
 
 
 def check_e_batch_read(events: list[AgentEvent]) -> tuple[bool, str]:
@@ -180,7 +188,10 @@ def check_e_batch_read(events: list[AgentEvent]) -> tuple[bool, str]:
     if not s["finished"]:
         return False, f"No AgentFinished (errors: {s['errors']})"
     if s["tool_started"] < 2:
-        return False, f"Expected ≥2 tool calls for multi-file read, got {s['tool_started']}"
+        return (
+            False,
+            f"Expected ≥2 tool calls for multi-file read, got {s['tool_started']}",
+        )
     if not s["full_text"].strip():
         return False, "No final text response"
     return True, f"{s['tool_started']} tool calls, {s['iterations']} rounds"
@@ -213,7 +224,9 @@ async def main() -> None:
     # ── Setup ──
     providers = load_config("config.yaml")
     provider = providers[0]  # Use first provider (Anthropic protocol)
-    print(f"\nProvider: {provider.name} | Model: {provider.model} | Protocol: {provider.protocol}")
+    print(
+        f"\nProvider: {provider.name} | Model: {provider.model} | Protocol: {provider.protocol}"
+    )
 
     client = LLMClient.create(provider)
     registry = get_default_registry()
@@ -222,24 +235,36 @@ async def main() -> None:
     results: list[tuple[str, bool, str]] = []
 
     # ── Scenario A: Simple text ──
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print("Scenario A: Simple text response (natural completion)")
-    print(f"{'─'*60}")
+    print(f"{'─' * 60}")
     conv_a = ConversationManager(system_prompt=SYSTEM_PROMPT)
-    agent_a = Agent(registry=registry, llm_client=client, exec_ctx=exec_ctx,
-                    conversation=conv_a, config=AgentConfig(max_iterations=5))
-    events_a = await run_prompt(agent_a, "Hello! What is 2+2? Just answer briefly.", "A: simple text")
+    agent_a = Agent(
+        registry=registry,
+        llm_client=client,
+        exec_ctx=exec_ctx,
+        conversation=conv_a,
+        config=AgentConfig(max_iterations=5),
+    )
+    events_a = await run_prompt(
+        agent_a, "Hello! What is 2+2? Just answer briefly.", "A: simple text"
+    )
     ok, msg = check_a_simple_text(events_a)
     results.append(("A: Simple text", ok, msg))
     print(f"  → {PASS if ok else FAIL} {msg}")
 
     # ── Scenario B: Multi-turn tool chain ──
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print("Scenario B: Multi-turn tool chain (read file → respond)")
-    print(f"{'─'*60}")
+    print(f"{'─' * 60}")
     conv_b = ConversationManager(system_prompt=SYSTEM_PROMPT)
-    agent_b = Agent(registry=registry, llm_client=client, exec_ctx=exec_ctx,
-                    conversation=conv_b, config=AgentConfig(max_iterations=10))
+    agent_b = Agent(
+        registry=registry,
+        llm_client=client,
+        exec_ctx=exec_ctx,
+        conversation=conv_b,
+        config=AgentConfig(max_iterations=10),
+    )
     events_b = await run_prompt(
         agent_b,
         "Read the file CLAUDE.md and tell me what it says about spec documents.",
@@ -251,12 +276,17 @@ async def main() -> None:
     print(f"  → {PASS if ok else FAIL} {msg}")
 
     # ── Scenario C: Plan Mode Toggle ──
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print("Scenario C: Plan Mode toggle (/plan ON → plan request → /plan OFF)")
-    print(f"{'─'*60}")
+    print(f"{'─' * 60}")
     conv_c = ConversationManager(system_prompt=SYSTEM_PROMPT)
-    agent_c = Agent(registry=registry, llm_client=client, exec_ctx=exec_ctx,
-                    conversation=conv_c, config=AgentConfig(max_iterations=10))
+    agent_c = Agent(
+        registry=registry,
+        llm_client=client,
+        exec_ctx=exec_ctx,
+        conversation=conv_c,
+        config=AgentConfig(max_iterations=10),
+    )
 
     # /plan → ON
     events_c1 = await run_prompt(agent_c, "/plan", "C1: /plan toggle ON")
@@ -274,17 +304,24 @@ async def main() -> None:
     # /plan → OFF
     events_c3 = await run_prompt(agent_c, "/plan", "C3: /plan toggle OFF")
 
-    ok, msg = check_c_plan_mode_toggle(events_c1, events_c2, events_c3, agent_c.mode.value)
+    ok, msg = check_c_plan_mode_toggle(
+        events_c1, events_c2, events_c3, agent_c.mode.value
+    )
     results.append(("C: Plan Mode toggle", ok, msg))
     print(f"  → {PASS if ok else FAIL} {msg}")
 
     # ── Scenario D: Auto-detect Plan Intent ──
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print("Scenario D: Auto-detect plan intent (natural language)")
-    print(f"{'─'*60}")
+    print(f"{'─' * 60}")
     conv_d = ConversationManager(system_prompt=SYSTEM_PROMPT)
-    agent_d = Agent(registry=registry, llm_client=client, exec_ctx=exec_ctx,
-                    conversation=conv_d, config=AgentConfig(max_iterations=10))
+    agent_d = Agent(
+        registry=registry,
+        llm_client=client,
+        exec_ctx=exec_ctx,
+        conversation=conv_d,
+        config=AgentConfig(max_iterations=10),
+    )
     assert agent_d.mode.value == "off"
 
     events_d = await run_prompt(
@@ -299,12 +336,17 @@ async def main() -> None:
     print(f"  → {PASS if ok else FAIL} {msg}")
 
     # ── Scenario E: Batch read ──
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print("Scenario E: Read multiple files concurrently")
-    print(f"{'─'*60}")
+    print(f"{'─' * 60}")
     conv_e = ConversationManager(system_prompt=SYSTEM_PROMPT)
-    agent_e = Agent(registry=registry, llm_client=client, exec_ctx=exec_ctx,
-                    conversation=conv_e, config=AgentConfig(max_iterations=10))
+    agent_e = Agent(
+        registry=registry,
+        llm_client=client,
+        exec_ctx=exec_ctx,
+        conversation=conv_e,
+        config=AgentConfig(max_iterations=10),
+    )
     events_e = await run_prompt(
         agent_e,
         "Read both CLAUDE.md and docs/spec.md. Tell me the first line of each.",
@@ -316,12 +358,17 @@ async def main() -> None:
     print(f"  → {PASS if ok else FAIL} {msg}")
 
     # ── Scenario F: Error handling ──
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print("Scenario F: Error handling (nonexistent file)")
-    print(f"{'─'*60}")
+    print(f"{'─' * 60}")
     conv_f = ConversationManager(system_prompt=SYSTEM_PROMPT)
-    agent_f = Agent(registry=registry, llm_client=client, exec_ctx=exec_ctx,
-                    conversation=conv_f, config=AgentConfig(max_iterations=5))
+    agent_f = Agent(
+        registry=registry,
+        llm_client=client,
+        exec_ctx=exec_ctx,
+        conversation=conv_f,
+        config=AgentConfig(max_iterations=5),
+    )
     events_f = await run_prompt(
         agent_f,
         "Read the file /nonexistent/ghost.txt and tell me what it contains.",
@@ -332,9 +379,9 @@ async def main() -> None:
     print(f"  → {PASS if ok else FAIL} {msg}")
 
     # ── Summary ──
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("RESULTS SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     passed = 0
     for name, ok, msg in results:
         status = PASS if ok else FAIL
@@ -342,7 +389,7 @@ async def main() -> None:
         if ok:
             passed += 1
     print(f"\n{passed}/{len(results)} scenarios passed")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     if passed < len(results):
         sys.exit(1)

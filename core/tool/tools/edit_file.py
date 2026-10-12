@@ -86,9 +86,7 @@ class EditFileTool(Tool):
             new = edit["new_string"]
 
             if old not in current:
-                match_results.append(
-                    {"index": i, "matched": False, "old_string": old}
-                )
+                match_results.append({"index": i, "matched": False, "old_string": old})
                 if not dry_run:
                     # Rollback: write original back
                     try:
@@ -117,8 +115,12 @@ class EditFileTool(Tool):
             occurrences = current.count(old)
             if occurrences > 1:
                 match_results.append(
-                    {"index": i, "matched": False, "old_string": old,
-                     "reason": "not_unique"}
+                    {
+                        "index": i,
+                        "matched": False,
+                        "old_string": old,
+                        "reason": "not_unique",
+                    }
                 )
                 if not dry_run:
                     try:
@@ -200,3 +202,6 @@ class EditFileTool(Tool):
 
     def category(self) -> str:
         return "file"
+
+    # 副作用工具**不重试**：注册表默认重试 2 次，写文件失败会被重复写入。
+    max_retries = 0

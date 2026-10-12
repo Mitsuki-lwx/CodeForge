@@ -3,7 +3,7 @@
 **为什么需要这个模块**：新建会话（`tui.app::_run_async`）与恢复历史会话
 （`CodeForgeApp.resume_session`）此前各自手写装配，导致两条路径的能力集
 分叉——恢复出来的会话缺 hooks、缺会话状态工具、缺 skill catalog、
-丢自定义 loop，且 `_dont_ask` 无人值守策略只在新会话生效。
+丢自定义 loop，且无人值守策略只在新会话生效。
 
 现在两条路径都走 `build_session`，装配差异不再可能出现。调用方只负责
 UI 与主循环。
@@ -104,6 +104,12 @@ class SessionBundle:
 
     def close(self) -> None:
         """关闭会话持有的文件句柄与锁（幂等）。"""
+        # 后台 shell 先清场：dev server / watcher 不该在会话结束后继续占端口
+        # （`kill_all` 是同步尽力而为；进程退出还有 `atexit` 兜底）。
+        try:
+            self.agent._exec_ctx.shells.kill_all()
+        except Exception:  # noqa: BLE001 —— 清理失败不该阻断关闭
+            pass
         # writer 持锁，故关 writer 即释放锁；`lock` 字段仅供调用方查询
         self.writer.close()
         self.journal.close()
@@ -142,9 +148,7 @@ def _resolve_session_context(
     d = Path(session_dir)
     spill = d / "tool-results"
     spill.mkdir(parents=True, exist_ok=True)
-    return SessionContext(
-        session_id=d.name, session_dir=str(d), spill_dir=str(spill)
-    )
+    return SessionContext(session_id=d.name, session_dir=str(d), spill_dir=str(spill))
 
 
 def _resolve_review_backend(config_path: str | None) -> tuple[str, object | None]:
@@ -196,7 +200,9 @@ def _build_approval_reviewer(
     backend, jev_cfg = _resolve_review_backend(config_path)
 
     if backend == "jev":
-        api_key = str(getattr(jev_cfg, "api_key", "") or "") if jev_cfg is not None else ""
+        api_key = (
+            str(getattr(jev_cfg, "api_key", "") or "") if jev_cfg is not None else ""
+        )
         if not api_key:
             notices.append(
                 "审批审查后端为 Jev，但没有可用的 "
@@ -218,7 +224,9 @@ def _build_approval_reviewer(
                 model=model,
                 timeout=float(getattr(jev_cfg, "timeout_s", 15.0) or 15.0),
             )
-            notices.append(f"审批审查后端：Jev（{model}，超时 {reviewer.timeout:.0f}s）")
+            notices.append(
+                f"审批审查后端：Jev（{model}，超时 {reviewer.timeout:.0f}s）"
+            )
             return reviewer
         except Exception as e:  # noqa: BLE001 —— 不让它冒泡；由调用方降级
             logger.warning("Jev 审查者构造失败：%s: %s", type(e).__name__, e)
@@ -232,6 +240,11 @@ def _build_approval_reviewer(
     # ── LLM 后端（**仅当显式配 `backend: llm` 时才走这里**）──
     try:
         config = getattr(client, "config", None)
+        if config is None:
+            # 取不到 provider 配置就构造不出审查者 —— 降级为"不启用"，由调用方
+            # 把 REVIEW 档降到 deny_all（变严，不会误放行）。
+            notices.append("审批审查走 LLM 后端，但拿不到 provider 配置 → 本次不启用")
+            return None
         aliases = getattr(config, "model_aliases", None) or {}
         if "haiku" not in aliases:
             notices.append(
@@ -243,6 +256,26 @@ def _build_approval_reviewer(
     except Exception as e:  # noqa: BLE001 —— 构造失败由调用方降级，不让它冒泡
         logger.warning("审批审查者构造失败：%s: %s", type(e).__name__, e)
         return None
+
+
+def _resolve_mcp_trust(config_path: str | None) -> bool | None:
+    """读 `features.mcp.trust_project`；读不到返回 None（交给环境变量/默认）。
+
+    单独一个函数而不是塞进调用点：这个值的**默认必须是"不信任"**，
+    任何异常路径都不能意外变成 True —— 所以除了显式读到 `true`，其余一律 None。
+    """
+    if not config_path:
+        return None
+    try:
+        from config.loader import load_config_full
+
+        _, features = load_config_full(config_path)
+    except Exception:  # noqa: BLE001 —— 读配置失败不能把项目级 MCP 放进来
+        return None
+    mcp = getattr(features, "mcp", None)
+    if mcp is None:
+        return None
+    return bool(getattr(mcp, "trust_project", False))
 
 
 def _load_team_features(config_path: str, notices: list[str]) -> object | None:
@@ -258,10 +291,18 @@ def _load_team_features(config_path: str, notices: list[str]) -> object | None:
 
 
 async def _load_mcp_tools(
-    registry, mcp_pool: ConnectionPool, notices: list[str]
+    registry,
+    mcp_pool: ConnectionPool,
+    notices: list[str],
+    *,
+    trust_project: bool | None = None,
 ) -> None:
-    """加载 MCP 外部工具并注册进 registry；单个 server 失败不影响其他。"""
-    mcp_configs = load_mcp_config()
+    """加载 MCP 外部工具并注册进 registry；单个 server 失败不影响其他。
+
+    ⚠️ `trust_project` 决定要不要读**工作区里**的 `.codeforge/mcp.json`。
+    默认不读 —— 那等于让仓库决定启动什么子进程，见 `core/mcp/config.py`。
+    """
+    mcp_configs = load_mcp_config(trust_project=trust_project, notices=notices)
     if not mcp_configs:
         return
     mcp_pool.configure(mcp_configs)
@@ -328,11 +369,12 @@ async def build_session(
         provider: 主模型 provider 配置。
         workspace: 项目根目录。
         loop_spec: Agent 循环策略（CLI `--loop` 优先，空则读 config `loop:`）。
-        headless: 无头模式。当前等价于「无人值守放行 ask 级工具决策」，
-            与既有 `--task` 行为保持一致。
+        headless: 无头模式（`--task`）。无头下没有 HITL 通道，`ask` 级决策必须
+            由策略代答；未显式给 `unattended_policy` 时取**最保守**的 `deny_all`
+            （只读）。要放开须显式传策略。
         unattended_policy: 无人值守策略（`allow_all` / `allow_write` /
-            `deny_all`）。给了它就走策略代答 `ask` 级决策；
-            未给但 `headless=True` 时，退回历史的「一律放行」语义。
+            `deny_all` / `review`）。给了它就走策略代答 `ask` 级决策；
+            未给但 `headless=True` 时退回 `deny_all`。
             两者都不给 = 有人值守（`ask` 走 HITL）。
         session_dir: 恢复会话时传入既有会话目录；为空则新建。
         conversation: 恢复会话时传入已还原的对话；为空则新建。
@@ -446,15 +488,19 @@ async def build_session(
         journal=journal,
     )
 
-    # 无头模式：自动放行 ask 级工具，否则无人环境会卡在 HITL 审批上。
-    # 注意 deny 不受影响（危险命令仍被拦）。
+    # 无头模式：**默认最保守**。无人环境没有按键的人，`ask` 级决策必须由策略
+    # 代答，否则会挂在 HITL 上（等于挂死）；但"能代答"不等于"一律放行"。
     #
-    # 显式策略优先于 headless 这个粗粒度开关：host 需要有"放行到什么程度"的
-    # 选择（默认只放只读），而不是只有"全放"和"全拒"两档。
+    # 旧实现是 `agent._dont_ask = True`（把每个 ask 都变成 allow）—— 效果是
+    # `codeforge --task "..."` 会零审批执行任意 shell 命令、写任意工作区内文件。
+    # 现在改成 `deny_all`：无头默认只读；要让 agent 真正干活，**显式**传
+    # `--unattended-policy allow_write`（或 `review` / `allow_all`）。
+    #
+    # 显式策略优先于 headless 这个粗粒度开关。
     if unattended_policy is not None:
         agent.set_unattended_policy(unattended_policy)
     elif headless:
-        agent._dont_ask = True
+        agent.set_unattended_policy(UnattendedPolicy.DENY_ALL)
 
     # ── `REVIEW` 档：挂上独立的审批审查者（spec_approval_review）──
     #
@@ -505,13 +551,9 @@ async def build_session(
 
     # ── SubAgent / 后台任务 / Worktree ──
     subagent_catalog = load_catalog(str(ws))
-    task_mgr = (
-        reuse.task_mgr if reuse.task_mgr is not None else BackgroundTaskManager()
-    )
+    task_mgr = reuse.task_mgr if reuse.task_mgr is not None else BackgroundTaskManager()
     wt_manager = (
-        reuse.wt_manager
-        if reuse.wt_manager is not None
-        else WorktreeManager(str(ws))
+        reuse.wt_manager if reuse.wt_manager is not None else WorktreeManager(str(ws))
     )
 
     registry.register(TaskListTool(task_mgr))
@@ -577,9 +619,7 @@ async def build_session(
     if team_features is not None and coordinator_enabled(team_features):
         agent.set_allowed_tools(coordinator_allowed_tools())
         agent.append_system_prompt(coordinator_prompt())
-        notices.append(
-            "Coordinator Mode 已启用（write_file/edit_file 已从工具集移除）"
-        )
+        notices.append("Coordinator Mode 已启用（write_file/edit_file 已从工具集移除）")
 
     # ── Skill 执行器 + catalog 注入 + 命令注册 ──
     skill_executor = SkillExecutor(
@@ -615,7 +655,12 @@ async def build_session(
     # ── MCP 外部工具 ──
     # 复用传入的连接池（恢复场景），避免重复拉起 MCP 子进程
     mcp_pool = reuse.mcp_pool if reuse.mcp_pool is not None else ConnectionPool()
-    await _load_mcp_tools(registry, mcp_pool, notices)
+    await _load_mcp_tools(
+        registry,
+        mcp_pool,
+        notices,
+        trust_project=_resolve_mcp_trust(config_path),
+    )
 
     # Agent 工具回填父 Agent 引用
     agent_tool.set_parent(agent)

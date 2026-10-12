@@ -143,10 +143,14 @@ class ReviewContext:
 
 
 def _clip(value: Any, limit: int = MAX_FIELD_CHARS) -> str:
-    text = value if isinstance(value, str) else json.dumps(
-        value, ensure_ascii=False, default=str
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, default=str)
     )
-    return text[:limit] + (f"…（截断，共 {len(text)} 字符）" if len(text) > limit else "")
+    return text[:limit] + (
+        f"…（截断，共 {len(text)} 字符）" if len(text) > limit else ""
+    )
 
 
 def build_review_input(
@@ -174,7 +178,9 @@ def build_review_input(
         for i, msg in enumerate(ctx.user_intent, 1):
             parts.append(f"{i}. {_clip(msg, 400)}")
     else:
-        parts.append("\n## 用户最近的请求（授权来源）\n(取不到 —— 没有明确授权时从严判断)")
+        parts.append(
+            "\n## 用户最近的请求（授权来源）\n(取不到 —— 没有明确授权时从严判断)"
+        )
     if include_output_instruction:
         parts.append("\n请按策略给出 JSON 结论。")
     return "\n".join(parts)
@@ -235,7 +241,9 @@ class ApprovalReviewer:
         prompt = build_review_input(ctx)
         try:
             text = await asyncio.wait_for(
-                self._collect(prompt, APIMessage, TextChunk, StreamError, CompletionDone),
+                self._collect(
+                    prompt, APIMessage, TextChunk, StreamError, CompletionDone
+                ),
                 timeout=self._timeout,
             )
         except TimeoutError:

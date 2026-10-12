@@ -102,9 +102,7 @@ class Team:
     mailbox_dir: str = ""
 
     # 状态锁：所有修改 members 后需持久化的方法，加锁后先 reload disk 再改。
-    _lock: asyncio.Lock = field(
-        default_factory=asyncio.Lock, repr=False, compare=False
-    )
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         return {

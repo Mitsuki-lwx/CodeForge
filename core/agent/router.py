@@ -97,7 +97,7 @@ async def judge_and_route(
         # SIMPLE：去掉标记，剩余作为回答
         answer = text
         if answer.upper().startswith("SIMPLE"):
-            answer = answer[len("SIMPLE"):].lstrip(":\n ")
+            answer = answer[len("SIMPLE") :].lstrip(":\n ")
         return ("simple", answer.strip())
     except Exception:  # noqa: BLE001 —— 判断失败转主对话，绝不阻塞
         return ("complex", None)

@@ -89,8 +89,14 @@ async def run_team_member(
             if t == "text":
                 agent, conv = factory(worktree_path, member_name, agent_id, m.content)
                 await _run_and_notify(
-                    manager, team, mailbox, agent, conv,
-                    member_name, agent_id, notify_lead,
+                    manager,
+                    team,
+                    mailbox,
+                    agent,
+                    conv,
+                    member_name,
+                    agent_id,
+                    notify_lead,
                 )
         await mailbox.mark_read(agent_id, indices)
 
@@ -142,6 +148,7 @@ async def _run_and_notify(
 
 
 # ── 默认 agent 工厂（真实构造，需完整 LLM wire）────────────────
+
 
 def _default_factory(
     worktree_path: str, member_name: str, agent_id: str, prompt: str

@@ -56,7 +56,7 @@ class PathSandbox:
             # 规范化：处理 ~、相对路径、..
             resolved = Path(os.path.expanduser(target_path))
             if not resolved.is_absolute():
-                resolved = (self._work_dir / resolved)
+                resolved = self._work_dir / resolved
             resolved = resolved.resolve()
         except (ValueError, OSError, RuntimeError):
             return SandboxResult(

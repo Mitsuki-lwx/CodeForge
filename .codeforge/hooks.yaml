@@ -43,10 +43,7 @@ rules:
       type: command
       command: "echo [hook] blocked: rm -rf is dangerous & exit 1"
 
-  # post_tool 占位：等 SubAgent 章节对接真实执行
-  - name: review-after-write
-    event: post_tool
-    once: true
-    action:
-      type: subagent
-      prompt: "检查刚写入的文件质量"
+  # 注：`action.type: subagent` 目前**未实现**（core/hooks/runner.py 只打一条
+  # "not yet implemented, skipped" 日志就跳过）。这里刻意不再放示例规则——
+  # 放一条永远不生效的规则只会让人以为它拦住了什么。
+  # 等 runner 支持后再把示例加回来。

@@ -276,7 +276,9 @@ class HookRunner:
             body = json.dumps(asdict(ctx), sort_keys=True)
         else:
             try:
-                body = ha.body.format_map(asdict(ctx))
+                # 用局部 `body`（上面已判非 None）而不是 `ha.body` ——
+                # 局部已被 mypy 收窄，字段没有。
+                body = body.format_map(asdict(ctx))
             except (KeyError, IndexError, ValueError, TypeError) as e:
                 # TypeError 来自 `asdict()` 对非 dataclass 抛错（ctx 的类型由调用方
                 # 决定）。漏了它，异常就逃出"hook 失败绝不抛出"这条约定（模块 docstring N1），

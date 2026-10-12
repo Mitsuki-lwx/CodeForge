@@ -91,8 +91,16 @@ class _PlaceholderTool(Tool):
 
 def _parent_tools():
     names = [
-        "read_file", "write_file", "glob", "grep", "bash",
-        "TeamCreate", "TaskList", "SendMessage", "TaskGet", "load_skill",
+        "read_file",
+        "write_file",
+        "glob",
+        "grep",
+        "bash",
+        "TeamCreate",
+        "TaskList",
+        "SendMessage",
+        "TaskGet",
+        "load_skill",
     ]
     return [_PlaceholderTool(n) for n in names]
 
@@ -100,8 +108,12 @@ def _parent_tools():
 def test_build_teammate_tools_inprocess_whitelist(tmp_path):
     mgr = _FakeManager(tmp_path)
     tools = build_teammate_tools(
-        parent_tools=_parent_tools(), team_manager=mgr, team_name="demo",
-        agent_id="agent-a", agent_name="alice", backend_type="in-process",
+        parent_tools=_parent_tools(),
+        team_manager=mgr,
+        team_name="demo",
+        agent_id="agent-a",
+        agent_name="alice",
+        backend_type="in-process",
     )
     names = [t.name() for t in tools]
     for c in ("TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "SendMessage"):
@@ -114,8 +126,12 @@ def test_build_teammate_tools_inprocess_whitelist(tmp_path):
 def test_build_teammate_tools_pane_keeps_parent_minus_teamcreate(tmp_path):
     mgr = _FakeManager(tmp_path)
     tools = build_teammate_tools(
-        parent_tools=_parent_tools(), team_manager=mgr, team_name="demo",
-        agent_id="agent-a", agent_name="alice", backend_type="tmux",
+        parent_tools=_parent_tools(),
+        team_manager=mgr,
+        team_name="demo",
+        agent_id="agent-a",
+        agent_name="alice",
+        backend_type="tmux",
     )
     names = [t.name() for t in tools]
     assert "write_file" in names
@@ -127,8 +143,12 @@ def test_build_teammate_tools_excludes_duplicate_collab_names(tmp_path):
     """队友 registry 里每个协作工具只出现一次（team-bound 实例覆盖父占位）。"""
     mgr = _FakeManager(tmp_path)
     tools = build_teammate_tools(
-        parent_tools=_parent_tools(), team_manager=mgr, team_name="demo",
-        agent_id="agent-a", agent_name="alice", backend_type="tmux",
+        parent_tools=_parent_tools(),
+        team_manager=mgr,
+        team_name="demo",
+        agent_id="agent-a",
+        agent_name="alice",
+        backend_type="tmux",
     )
     names = [t.name() for t in tools]
     for c in ("TaskList", "SendMessage", "TaskGet"):
@@ -177,7 +197,9 @@ async def test_send_message_delivers_to_mailbox(tmp_path):
     ]
     mgr.registry_names["alice"] = "agent-a"
     sm = SendMessageTool(mgr, "demo", "lead", "lead")
-    res = await sm.execute(None, {"to": "alice", "message": "hello", "summary": "say hi"})
+    res = await sm.execute(
+        None, {"to": "alice", "message": "hello", "summary": "say hi"}
+    )
     assert res.success
     box = Box(mgr.team.mailbox_dir)
     msgs = await box.read("agent-a")
@@ -245,7 +267,9 @@ async def test_send_message_default_still_wakes(tmp_path, monkeypatch):
     sm = SendMessageTool(mgr, "demo", "lead", "lead")
     calls = _spy_wake(sm, monkeypatch)
 
-    res = await sm.execute(None, {"to": "alice", "message": "hello", "summary": "say hi"})
+    res = await sm.execute(
+        None, {"to": "alice", "message": "hello", "summary": "say hi"}
+    )
     assert res.success
     assert calls == [("wake", "agent-a"), ("resume", "agent-a")]
     # 默认路径**不**多出 notified 字段（返回值与旧版逐字一致）

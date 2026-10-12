@@ -113,9 +113,7 @@ async def test_scan_skips_malformed(tmp_path, monkeypatch):
 async def test_delete_rejects_active_members(tmp_path, monkeypatch):
     mgr = _make_mgr(tmp_path, monkeypatch)
     team = await mgr.create("demo", "")
-    team.members.append(
-        TeammateInfo(name="alice", agent_id="agent-a", is_active=True)
-    )
+    team.members.append(TeammateInfo(name="alice", agent_id="agent-a", is_active=True))
     mgr._persist(team)
     with pytest.raises(TeamHasActiveMembersError):
         await mgr.delete("demo", force=False)

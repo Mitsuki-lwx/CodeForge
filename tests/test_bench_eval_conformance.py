@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from benchmark.evaluators.conformance import evaluate_conformance, _is_control
+from benchmark.evaluators.conformance import _is_control, evaluate_conformance
 
 
 def test_empty_output_is_0():
@@ -21,7 +21,10 @@ def test_ansi_escape_only():
 
 
 def test_plain_single_block_is_1():
-    assert evaluate_conformance({}, "修复了 calc.py 的 add()，pytest 全通过。")["value"] == 1.0
+    assert (
+        evaluate_conformance({}, "修复了 calc.py 的 add()，pytest 全通过。")["value"]
+        == 1.0
+    )
     assert evaluate_conformance({}, "55")["value"] == 1.0
 
 
@@ -31,7 +34,10 @@ def test_markdown_fence_stripped():
 
 
 def test_long_rambling_is_not_pipeable():
-    rambling = "\n".join(f"line {i} of unrelated discussion text repeated several times" for i in range(80))
+    rambling = "\n".join(
+        f"line {i} of unrelated discussion text repeated several times"
+        for i in range(80)
+    )
     assert evaluate_conformance({}, rambling)["value"] == 0.0
 
 

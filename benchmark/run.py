@@ -25,20 +25,35 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="codeforge-bench",
         description="用 Langfuse dataset + experiment 评测 CodeForge agent 能力",
     )
-    p.add_argument("--config", default="config.yaml", help="配置文件路径（默认 config.yaml）")
-    p.add_argument("--dataset", default="smoke", choices=list_dataset_names(),
-                   help=f"数据集（默认 smoke；可选 {list_dataset_names()}）")
+    p.add_argument(
+        "--config", default="config.yaml", help="配置文件路径（默认 config.yaml）"
+    )
+    p.add_argument(
+        "--dataset",
+        default="smoke",
+        choices=list_dataset_names(),
+        help=f"数据集（默认 smoke；可选 {list_dataset_names()}）",
+    )
     p.add_argument("--variant", default="dev", help="experiment run 名（用于 UI 对比）")
-    p.add_argument("--model", type=int, default=0,
-                   help="用 providers 里第几个（0 起始）作为评测模型，默认 0")
-    p.add_argument("--max-items", type=int, default=None,
-                   help="只跑前 N 条 item（默认全量）")
-    p.add_argument("--max-iterations", type=int, default=12,
-                   help="单条 item 的最大 agent 迭代轮数（默认 12）")
-    p.add_argument("--keep-artifacts", action="store_true",
-                   help="跑完不清理临时目录")
-    p.add_argument("--no-record", action="store_true",
-                   help="只跑+本地打分，不写 Langfuse")
+    p.add_argument(
+        "--model",
+        type=int,
+        default=0,
+        help="用 providers 里第几个（0 起始）作为评测模型，默认 0",
+    )
+    p.add_argument(
+        "--max-items", type=int, default=None, help="只跑前 N 条 item（默认全量）"
+    )
+    p.add_argument(
+        "--max-iterations",
+        type=int,
+        default=12,
+        help="单条 item 的最大 agent 迭代轮数（默认 12）",
+    )
+    p.add_argument("--keep-artifacts", action="store_true", help="跑完不清理临时目录")
+    p.add_argument(
+        "--no-record", action="store_true", help="只跑+本地打分，不写 Langfuse"
+    )
     return p
 
 

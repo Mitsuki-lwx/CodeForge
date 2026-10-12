@@ -61,8 +61,8 @@ def _clear_progress(agent: Any) -> None:
 #
 # `ask` 级决策必须有人应答，否则 `Agent._execute_tools` 会停在
 # `await self._hitl_event.wait()` 上**无限期挂死**。应答者只有三种：
-#   1. `unattended_policy`   权限层代答
-#   2. `_dont_ask`           权限层转 allow（`--task` 无头）
+#   1. `unattended_policy`   权限层代答（含 `--task` 无头的 deny_all 默认档）
+#   2. `_dont_ask`           权限层转 allow（仅角色声明 dontask 时使用）
 #   3. `approval_upgrader`   审批通道冒泡，或有人调 `resolve_hitl`
 #
 # 三者原先由各入口**分别手工设置**，于是 `core/skills/executor.py` 的 fork Agent
@@ -147,6 +147,45 @@ def _fallback_policy(parent: Any) -> Any:
     if policy is UnattendedPolicy.REVIEW:
         return UnattendedPolicy.DENY_ALL
     return policy
+
+
+@contextmanager
+def linked_cancel(child: Any, parent: Any = None):
+    """把**父的取消**转成子的取消（进入起观察任务，退出收掉）。
+
+    为什么需要：前台子 Agent 是"父 `await` 等结果"，刻意**不设超时**（设了就会退回
+    sleep+ls 轮询，见 `_run_foreground` 的取舍说明）。但"不设超时"不该等于
+    "按了 Ctrl-C 也停不下来" —— 实测：父的 `cancel()` **不会**传到子，
+    于是用户看到 "Cancelled" 之后，子 Agent 还在继续跑（上限是它自己的
+    `max_iterations` × 每轮 LLM+工具，最长可达数小时），父也一直卡在 `await` 上。
+
+    所以补一条**取消桥**：父被取消 → 子的 `_cancel` 也置上 → 子在下一次迭代边界
+    退出。刻意用观察任务而不是共享同一个 `Event`：子跑完一轮会
+    `agent._cancel.clear()`，共享的话会把父的取消也清掉。
+    """
+    if (
+        parent is None
+        or not hasattr(parent, "_cancel")
+        or not hasattr(child, "_cancel")
+    ):
+        yield
+        return
+
+    async def _watch() -> None:
+        try:
+            while not parent._cancel.is_set():
+                await asyncio.sleep(0.2)
+            child._cancel.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 —— 桥坏了不该影响子 Agent 本身
+            pass
+
+    task = asyncio.ensure_future(_watch())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 @contextmanager
@@ -387,7 +426,10 @@ async def _run_loop(
                 getattr(agent, "_agent_name", None) or "sub",
             )
         except Exception:  # noqa: BLE001 —— 观测辅助失败静默
-            return
+            # ⚠️ 这里是 `pass` 不是 `return`：本函数返回 `str`（最终文本），
+            # 一个裸 `return` 会让子 Agent **整个回合静默终止并返回 None**
+            # —— 只是埋点失败，不该把活干掉。（mypy 的 return-value 抓到的正是这个。）
+            pass
         tools = agent._build_tool_defs()
 
         env_info = __import__(
@@ -653,22 +695,8 @@ async def _emergency_compact(
     return retryable, None
 
 
-# ── 挂载到 Agent 类 ──
-
-
-def attach_to_agent():
-    """将 run_to_completion 方法挂载到 Agent 类上。
-
-    在 core.agent.__init__.py 中调用一次即可。
-    """
-    from core.agent.agent import Agent
-
-    async def _run_to_completion(
-        self: Agent,
-        conv: ConversationManager,
-        task: str = "",
-        events: asyncio.Queue | None = None,
-    ) -> str:
-        return await run_to_completion(self, conv, task, events)
-
-    Agent.run_to_completion = _run_to_completion  # type: ignore[method-assign]
+# ── 收尾 ──
+#
+# `Agent.run_to_completion` 现在是 `ToolExecutionMixin` 上的**显式方法**
+# （见 `agent_tools.py`），不再在 import 期把方法挂到 `Agent` 类上 ——
+# 那样读 `agent.py` 是看不到它的，类型检查也看不见。

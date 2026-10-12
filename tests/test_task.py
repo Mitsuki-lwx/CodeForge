@@ -366,7 +366,9 @@ async def test_send_message_to_allows_failed(monkeypatch, fake_run):
     """★ 状态放宽：失败的任务也能"接着说一句"。"""
     monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
     mgr = BackgroundTaskManager()
-    _register_task(mgr, "task_failed1", "f1", TaskStatus.FAILED, conv=ConversationManager())
+    _register_task(
+        mgr, "task_failed1", "f1", TaskStatus.FAILED, conv=ConversationManager()
+    )
 
     await mgr.send_message_to("task_failed1", "重试一次")
     assert mgr.get("task_failed1").status == TaskStatus.RUNNING
@@ -381,7 +383,9 @@ async def test_send_message_to_resets_progress(monkeypatch, fake_run):
     """续派要把上一轮的产物清干净，否则状态行/列表会显示陈旧步数。"""
     monkeypatch.setattr(sub_agent_mod, "run_to_completion", fake_run)
     mgr = BackgroundTaskManager()
-    bt = _register_task(mgr, "task_reset", "r", TaskStatus.COMPLETED, conv=ConversationManager())
+    bt = _register_task(
+        mgr, "task_reset", "r", TaskStatus.COMPLETED, conv=ConversationManager()
+    )
     bt.tool_count = 9
     bt.last_activity = "Grep"
     bt.result = "old"
@@ -612,6 +616,7 @@ async def test_stop_never_started_task_finalizes(monkeypatch):
 @pytest.mark.asyncio
 async def test_stop_started_task_notifies_exactly_once(monkeypatch):
     """已启动的协程自己会收尾 —— 兜底逻辑不能让它多发一次完成通知。"""
+
     async def _slow(agent, conv, task="", events=None):
         await asyncio.sleep(30)
 

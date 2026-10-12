@@ -49,7 +49,9 @@ async def _cmd_list(ui: UI) -> None:
     for s in sessions:
         owner = s.get("owner", "agent")
         label = f"[{owner}]"
-        ui.println(f"  {s.get('name', '')}  {label}  {s.get('path', '')}  branch={s.get('branch', '')}")
+        ui.println(
+            f"  {s.get('name', '')}  {label}  {s.get('path', '')}  branch={s.get('branch', '')}"
+        )
 
 
 async def _cmd_create(ui: UI, name: str) -> None:

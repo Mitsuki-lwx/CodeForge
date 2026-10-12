@@ -401,6 +401,7 @@ class BackgroundTaskManager:
     def _next_id(self) -> str:
         self._counter += 1
         import secrets
+
         return f"task_{secrets.token_hex(4)}"
 
 

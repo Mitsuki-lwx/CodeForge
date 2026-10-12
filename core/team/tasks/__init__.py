@@ -148,9 +148,7 @@ class Store:
         tasks = list(by_id.values())
         for t in tasks:
             t.is_ready = all(
-                by_id[b].status is Status.COMPLETED
-                for b in t.blocked_by
-                if b in by_id
+                by_id[b].status is Status.COMPLETED for b in t.blocked_by if b in by_id
             ) and all(b in by_id for b in t.blocked_by)
         if f is not None and f.status is not None:
             tasks = [t for t in tasks if t.status is f.status]
@@ -160,9 +158,7 @@ class Store:
     async def update(self, id_: str, p: Patch) -> Task | None:
         async with filelock.acquire(self._lock()):
             tasks = self._read_tasks()
-            idx = next(
-                (i for i, d in enumerate(tasks) if d.get("id") == id_), None
-            )
+            idx = next((i for i, d in enumerate(tasks) if d.get("id") == id_), None)
             if idx is None:
                 return None
             t = Task.from_dict(tasks[idx])
@@ -191,18 +187,38 @@ class Store:
             # ── 双向维护依赖 ──
             # src.add_blocks=[x] ⟹ src.blocks ∋ x ⟹ x.blocked_by ∋ src
             if p.add_blocks:
-                _sync_deps(tasks, src_id=id_, targets=p.add_blocks, op="add",
-                           reverse_field="blocked_by")
+                _sync_deps(
+                    tasks,
+                    src_id=id_,
+                    targets=p.add_blocks,
+                    op="add",
+                    reverse_field="blocked_by",
+                )
             if p.remove_blocks:
-                _sync_deps(tasks, src_id=id_, targets=p.remove_blocks, op="remove",
-                           reverse_field="blocked_by")
+                _sync_deps(
+                    tasks,
+                    src_id=id_,
+                    targets=p.remove_blocks,
+                    op="remove",
+                    reverse_field="blocked_by",
+                )
             # src.add_blocked_by=[x] ⟹ src.blocked_by ∋ x ⟹ x.blocks ∋ src
             if p.add_blocked_by:
-                _sync_deps(tasks, src_id=id_, targets=p.add_blocked_by, op="add",
-                           reverse_field="blocks")
+                _sync_deps(
+                    tasks,
+                    src_id=id_,
+                    targets=p.add_blocked_by,
+                    op="add",
+                    reverse_field="blocks",
+                )
             if p.remove_blocked_by:
-                _sync_deps(tasks, src_id=id_, targets=p.remove_blocked_by, op="remove",
-                           reverse_field="blocks")
+                _sync_deps(
+                    tasks,
+                    src_id=id_,
+                    targets=p.remove_blocked_by,
+                    op="remove",
+                    reverse_field="blocks",
+                )
 
             self._write_tasks(tasks)
             return t

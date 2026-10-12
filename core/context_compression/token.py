@@ -9,10 +9,26 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, Protocol
 
-from conversation.message import Message
 from core.context_compression.const import ESTIMATE_CHARS_PER_TOKEN
+
+
+class HasContent(Protocol):
+    """`message_chars` 需要的全部接口 —— 只读 `.content`。
+
+    刻意不用 `list[Message]`：本函数同时被喂 `Message`（会话内部）与
+    `APIMessage`（`to_api_format()` 的产物），两者只共有 `.content`。
+    写死具体类型会让调用点不得不转型（mypy 报 arg-type），
+    而这里真正依赖的只有 `.content` 一个属性。
+
+    声明成**只读 property**（不是普通属性）：普通属性对 Protocol 是**不变**的，
+    `Message.content: str` 就不满足 `str | list[dict]`；只读 property 才是协变的。
+    """
+
+    @property
+    def content(self) -> str | list[dict[str, Any]]: ...
 
 
 def usage_anchor(u: dict[str, Any]) -> int:
@@ -28,7 +44,7 @@ def usage_anchor(u: dict[str, Any]) -> int:
     )
 
 
-def message_chars(msgs: list[Message]) -> int:
+def message_chars(msgs: Sequence[HasContent]) -> int:
     """计算消息列表的字符总量（UTF-8 字节）。
 
     累加每条消息 content 的字节长度。
@@ -71,7 +87,7 @@ def _content_chars(content: str | list[dict[str, Any]]) -> int:
 
 def estimate_tokens(
     anchor: int,
-    all_msgs: list[Message],
+    all_msgs: Sequence[HasContent],
     anchor_msg_len: int,
 ) -> int:
     """锚定真实 usage + 字符增量估算。

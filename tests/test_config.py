@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
+from config.loader import _validate_providers, load_config
 from config.model import ProviderConfig
-from config.loader import load_config, _validate_providers, VALID_PROTOCOLS
 
 
 class TestProviderConfig:
@@ -43,7 +42,10 @@ class TestProviderConfig:
 
     def test_empty_base_url_normalized(self):
         cfg = ProviderConfig(
-            name="test", protocol="anthropic", model="c", api_key="k",
+            name="test",
+            protocol="anthropic",
+            model="c",
+            api_key="k",
         )
         assert cfg.base_url is None
 
@@ -52,20 +54,26 @@ class TestValidateProviders:
     """Provider 列表校验。"""
 
     def test_valid_single(self):
-        providers = _validate_providers([{
-            "name": "A",
-            "protocol": "anthropic",
-            "model": "c",
-            "api_key": "k",
-        }])
+        providers = _validate_providers(
+            [
+                {
+                    "name": "A",
+                    "protocol": "anthropic",
+                    "model": "c",
+                    "api_key": "k",
+                }
+            ]
+        )
         assert len(providers) == 1
         assert providers[0].name == "A"
 
     def test_valid_multiple(self):
-        providers = _validate_providers([
-            {"name": "A", "protocol": "anthropic", "model": "c", "api_key": "k"},
-            {"name": "B", "protocol": "openai", "model": "g", "api_key": "k2"},
-        ])
+        providers = _validate_providers(
+            [
+                {"name": "A", "protocol": "anthropic", "model": "c", "api_key": "k"},
+                {"name": "B", "protocol": "openai", "model": "g", "api_key": "k2"},
+            ]
+        )
         assert len(providers) == 2
 
     def test_empty_list_exits(self):
@@ -74,27 +82,53 @@ class TestValidateProviders:
 
     def test_missing_name_exits(self):
         with pytest.raises(SystemExit):
-            _validate_providers([{
-                "protocol": "anthropic", "model": "c", "api_key": "k",
-            }])
+            _validate_providers(
+                [
+                    {
+                        "protocol": "anthropic",
+                        "model": "c",
+                        "api_key": "k",
+                    }
+                ]
+            )
 
     def test_empty_api_key_exits(self):
         with pytest.raises(SystemExit):
-            _validate_providers([{
-                "name": "A", "protocol": "anthropic", "model": "c", "api_key": "",
-            }])
+            _validate_providers(
+                [
+                    {
+                        "name": "A",
+                        "protocol": "anthropic",
+                        "model": "c",
+                        "api_key": "",
+                    }
+                ]
+            )
 
     def test_invalid_protocol_exits(self):
         with pytest.raises(SystemExit):
-            _validate_providers([{
-                "name": "A", "protocol": "invalid", "model": "c", "api_key": "k",
-            }])
+            _validate_providers(
+                [
+                    {
+                        "name": "A",
+                        "protocol": "invalid",
+                        "model": "c",
+                        "api_key": "k",
+                    }
+                ]
+            )
 
     def test_missing_model_exits(self):
         with pytest.raises(SystemExit):
-            _validate_providers([{
-                "name": "A", "protocol": "anthropic", "api_key": "k",
-            }])
+            _validate_providers(
+                [
+                    {
+                        "name": "A",
+                        "protocol": "anthropic",
+                        "api_key": "k",
+                    }
+                ]
+            )
 
 
 class TestLoadConfig:
@@ -102,11 +136,20 @@ class TestLoadConfig:
 
     def test_load_valid_yaml(self, tmp_path: Path):
         cfg = tmp_path / "config.yaml"
-        cfg.write_text(yaml.dump({
-            "providers": [
-                {"name": "A", "protocol": "anthropic", "model": "c", "api_key": "k"},
-            ]
-        }))
+        cfg.write_text(
+            yaml.dump(
+                {
+                    "providers": [
+                        {
+                            "name": "A",
+                            "protocol": "anthropic",
+                            "model": "c",
+                            "api_key": "k",
+                        },
+                    ]
+                }
+            )
+        )
         providers = load_config(str(cfg))
         assert len(providers) == 1
 

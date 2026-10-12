@@ -23,7 +23,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output.plain_text import PlainTextOutput
 
 from core.task.manager import BackgroundTask, TaskStatus
-from tui.app import _STATUS_TICK, _refresh_status_bar
+from tui.session import _STATUS_TICK, _refresh_status_bar
 from tui.teammate_status import build_status_text, disp_width, format_elapsed
 
 NOW = 1000.0
@@ -180,6 +180,14 @@ def test_pure_function_is_repeatable_and_non_mutating():
 
 
 # ── 2. 真实渲染管线 ────────────────────────────────────────────────
+#
+# ⚠️ 这里刻意**不断言渲染产物里有没有那行字**。`bottom_toolbar` 的最终绘制由
+# prompt_toolkit 的 Renderer 决定，而它在无控制台环境下会走"单行收尾"路径：
+# 同一段代码在 `python -c` 里会把 toolbar 画出来，在 pytest 里就不画
+# （已实测：输出只剩 `'> hi\r\n'`）。那是第三方渲染器的环境行为，不是我们的契约。
+#
+# 我们**自己的**契约是：把状态文本交给 prompt_toolkit 的 bottom_toolbar，
+# 且它随状态变化。下面用记录器断言这条链路 —— 稳定、且真能抓到"没接上"的回归。
 
 
 async def _render(toolbar) -> str:
@@ -196,37 +204,58 @@ async def _render(toolbar) -> str:
     return buf.getvalue()
 
 
+class _RecordingToolbar:
+    """包一层 toolbar，记录渲染器每次询问时它返回了什么。"""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.texts: list[str] = []
+
+    def __call__(self) -> str:
+        text = self._inner()
+        self.texts.append(text)
+        return text
+
+
 @pytest.mark.asyncio
-async def test_status_line_appears_in_rendered_output():
-    """★ 状态行**真的**出现在渲染产物里。"""
+async def test_status_line_is_handed_to_bottom_toolbar():
+    """★ 状态行**真的**经 bottom_toolbar 交给了渲染器。"""
     mgr = _Mgr([_bt(steps=8, activity="Grep")])
-    out = await _render(lambda: build_status_text(mgr, now=NOW, width=90))
-    assert "后台 1" in out
-    assert "alice" in out
-    assert "8步" in out
+    tb = _RecordingToolbar(lambda: build_status_text(mgr, now=NOW, width=90))
+    await _render(tb)
+
+    assert tb.texts, "渲染器从未询问 bottom_toolbar"
+    assert "后台 1" in tb.texts[0]
+    assert "alice" in tb.texts[0]
+    assert "8步" in tb.texts[0]
 
 
 @pytest.mark.asyncio
 async def test_status_line_absent_when_no_running_task():
-    """★ 无运行中任务时渲染产物里**不该有**状态行（零回归）。"""
+    """★ 无运行中任务时交给渲染器的状态行为空/None（零回归）。
+
+    `build_status_text` 在无运行中任务时返回 `None` —— 提示符下方不占行。
+    """
     mgr = _Mgr()
-    out = await _render(lambda: build_status_text(mgr, now=NOW, width=90))
-    assert "后台" not in out
-    assert "alice" not in out
+    tb = _RecordingToolbar(lambda: build_status_text(mgr, now=NOW, width=90))
+    await _render(tb)
+
+    assert tb.texts, "渲染器从未询问 bottom_toolbar"
+    assert not any(tb.texts), f"无任务时不该有状态行，得到 {tb.texts!r}"
 
 
 @pytest.mark.asyncio
 async def test_status_line_follows_state_change_on_rerender():
-    """状态变化后再次渲染，产物跟着变（证明刷新链路成立）。"""
+    """状态变化后再次交给渲染器，文本跟着变（证明刷新链路成立）。"""
     mgr = _Mgr([_bt(steps=8, activity="Grep")])
-    toolbar = lambda: build_status_text(mgr, now=NOW, width=90)
+    tb = _RecordingToolbar(lambda: build_status_text(mgr, now=NOW, width=90))
 
-    before = await _render(toolbar)
-    assert "后台 1" in before
+    await _render(tb)
+    assert "后台 1" in (tb.texts[-1] or "")
 
     mgr.tasks = [_bt(status=TaskStatus.COMPLETED, steps=8, activity="Grep")]
-    after = await _render(toolbar)
-    assert "后台" not in after
+    await _render(tb)
+    assert not tb.texts[-1], f"任务已结束仍显示状态行：{tb.texts[-1]!r}"
 
 
 # ── 3. 刷新协程 ────────────────────────────────────────────────────

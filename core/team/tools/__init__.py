@@ -36,6 +36,7 @@ class _TeamBoundMixin:
     def _team_ok(self) -> bool:
         return bool(self._resolve_team_name())
 
+
 # 团队全栈注册表里被隐藏的元工具。
 _TEAM_LEAD_ONLY_TOOLS = {"TeamCreate", "TeamDelete"}
 
@@ -78,7 +79,9 @@ class TaskCreateTool(_TeamBoundMixin, Tool):
         return "TaskCreate"
 
     def description(self) -> str:
-        return "Create a shared task on this team's task board. Returns the new task id."
+        return (
+            "Create a shared task on this team's task board. Returns the new task id."
+        )
 
     def input_schema(self) -> dict:
         return {
@@ -86,9 +89,15 @@ class TaskCreateTool(_TeamBoundMixin, Tool):
             "properties": {
                 "title": {"type": "string", "description": "Task title (required)."},
                 "description": {"type": "string", "description": "Optional detail."},
-                "assignee": {"type": "string", "description": "Optional assignee name."},
-                "blocked_by": {"type": "array", "items": {"type": "string"},
-                               "description": "Optional ids this task depends on."},
+                "assignee": {
+                    "type": "string",
+                    "description": "Optional assignee name.",
+                },
+                "blocked_by": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional ids this task depends on.",
+                },
             },
             "required": ["title"],
         }
@@ -138,9 +147,11 @@ class TaskGetTool(_TeamBoundMixin, Tool):
         return "Get one shared task by its id from this team's task board."
 
     def input_schema(self) -> dict:
-        return {"type": "object",
-                "properties": {"task_id": {"type": "string"}},
-                "required": ["task_id"]}
+        return {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        }
 
     def is_read_only(self) -> bool:
         return True
@@ -183,7 +194,10 @@ class TaskListTool(_TeamBoundMixin, Tool):
         return {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "pending/in_progress/completed/blocked"},
+                "status": {
+                    "type": "string",
+                    "description": "pending/in_progress/completed/blocked",
+                },
                 "assignee": {"type": "string"},
             },
             "required": [],
@@ -236,7 +250,10 @@ class TaskUpdateTool(_TeamBoundMixin, Tool):
                 "task_id": {"type": "string"},
                 "title": {"type": "string"},
                 "description": {"type": "string"},
-                "status": {"type": "string", "description": "pending/in_progress/completed/blocked"},
+                "status": {
+                    "type": "string",
+                    "description": "pending/in_progress/completed/blocked",
+                },
                 "assignee": {"type": "string"},
                 "add_blocks": {"type": "array", "items": {"type": "string"}},
                 "add_blocked_by": {"type": "array", "items": {"type": "string"}},
@@ -331,8 +348,14 @@ class SendMessageTool(_TeamBoundMixin, Tool):
         return {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "teammate name / agent id / '*'"},
-                "summary": {"type": "string", "description": "5-10 word summary for text messages"},
+                "to": {
+                    "type": "string",
+                    "description": "teammate name / agent id / '*'",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "5-10 word summary for text messages",
+                },
                 "message": {"type": "string"},
                 "message_type": {"type": "string", "enum": sorted(VALID_MESSAGE_TYPES)},
                 "metadata": {"type": "object"},
@@ -394,7 +417,10 @@ class SendMessageTool(_TeamBoundMixin, Tool):
                 if m.agent_id != self._from_agent_id and m.agent_id != "lead"
             ]
             # Lead 也是广播对象（排除发件人自己即可）
-            if team.lead_agent_id not in targets and team.lead_agent_id != self._from_agent_id:
+            if (
+                team.lead_agent_id not in targets
+                and team.lead_agent_id != self._from_agent_id
+            ):
                 targets.append(team.lead_agent_id)
             for aid in targets:
                 await mailbox.write(aid, msg)
@@ -511,15 +537,16 @@ def build_teammate_tools(
 
     if backend_type == "in-process":
         keep = [
-            t for t in parent_tools
+            t
+            for t in parent_tools
             if t.name() in IN_PROCESS_TEAMMATE_ALLOWED_TOOLS
             and t.name() not in collab_names
         ]
     else:
         keep = [
-            t for t in parent_tools
-            if t.name() not in _TEAM_LEAD_ONLY_TOOLS
-            and t.name() not in collab_names
+            t
+            for t in parent_tools
+            if t.name() not in _TEAM_LEAD_ONLY_TOOLS and t.name() not in collab_names
         ]
 
     return keep + collab

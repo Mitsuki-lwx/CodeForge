@@ -158,7 +158,9 @@ async def test_assistant_and_tool_share_one_conversation(tmp_path):
     await run_to_completion(agent, agent._conversation, "读文件")
 
     msgs = _api_messages(agent._conversation)
-    assert any(_has_block(m, "tool_use") for m in msgs), "助手消息（含 tool_use）应当在会话里"
+    assert any(_has_block(m, "tool_use") for m in msgs), (
+        "助手消息（含 tool_use）应当在会话里"
+    )
     assert any(_has_block(m, "tool_result") for m in msgs), (
         "工具结果应当在**同一个**会话里"
     )
@@ -207,7 +209,9 @@ async def test_agent_tool_entry_passes_agents_own_conversation(tmp_path, monkeyp
     tool.set_parent(parent)
 
     ctx = ExecutionContext(cwd=tmp_path, session_id="main")
-    await tool.execute(ctx, {"prompt": "统计行数", "description": "d", "subagent_type": "Explore"})
+    await tool.execute(
+        ctx, {"prompt": "统计行数", "description": "d", "subagent_type": "Explore"}
+    )
 
     assert "conv" in captured, "run_to_completion 应当被调用"
     assert captured["conv"] is captured["agent"]._conversation, (

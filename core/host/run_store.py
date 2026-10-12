@@ -151,7 +151,9 @@ class RunStore:
     `timeout` 内自动重试。host 的写路径是单事件循环，实际不会走到争用分支。
     """
 
-    def __init__(self, workspace: str | Path, *, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self, workspace: str | Path, *, db_path: str | Path | None = None
+    ) -> None:
         self._workspace = str(Path(workspace).resolve())
         self._db_path = (
             Path(db_path)

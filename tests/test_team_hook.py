@@ -16,10 +16,12 @@ from core.agent.team_hook import (
 def _make_tc():
     async def read():
         return [0, 1], [
-            IncomingMessage(from_="lead", to="alice", type="text", summary="m1",
-                            content="one"),
-            IncomingMessage(from_="bob", to="alice", type="text", summary="m2",
-                            content="two"),
+            IncomingMessage(
+                from_="lead", to="alice", type="text", summary="m1", content="one"
+            ),
+            IncomingMessage(
+                from_="bob", to="alice", type="text", summary="m2", content="two"
+            ),
         ]
 
     marked: list[list[int]] = []
@@ -47,8 +49,13 @@ def test_install_uninstall_context():
 
 
 def test_incoming_message_fields():
-    m = IncomingMessage(from_="lead", to="alice", type="plan_approval_response",
-                        summary="ok", payload={"approve": True})
+    m = IncomingMessage(
+        from_="lead",
+        to="alice",
+        type="plan_approval_response",
+        summary="ok",
+        payload={"approve": True},
+    )
     assert m.payload == {"approve": True}
 
 

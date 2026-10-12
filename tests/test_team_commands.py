@@ -47,11 +47,18 @@ async def test_team_list_empty():
 
 
 async def test_team_list_shows_summary():
-    ui = _FakeUI(teams=[
-        {"name": "demo", "backend": "in-process", "members": [
-            {"is_active": None}, {"is_active": False},
-        ]},
-    ])
+    ui = _FakeUI(
+        teams=[
+            {
+                "name": "demo",
+                "backend": "in-process",
+                "members": [
+                    {"is_active": None},
+                    {"is_active": False},
+                ],
+            },
+        ]
+    )
     await handle_team(ui, "list")
     joined = "\n".join(ui.lines)
     assert "demo" in joined
@@ -60,13 +67,22 @@ async def test_team_list_shows_summary():
 
 
 async def test_team_info():
-    ui = _FakeUI(info={
-        "name": "demo", "backend": "in-process", "config_path": "/x/config.json",
-        "members": [
-            {"name": "alice", "agent_id": "agent-a", "backend_type": "in-process",
-             "is_active": None, "worktree_path": "/wt"},
-        ],
-    })
+    ui = _FakeUI(
+        info={
+            "name": "demo",
+            "backend": "in-process",
+            "config_path": "/x/config.json",
+            "members": [
+                {
+                    "name": "alice",
+                    "agent_id": "agent-a",
+                    "backend_type": "in-process",
+                    "is_active": None,
+                    "worktree_path": "/wt",
+                },
+            ],
+        }
+    )
     await handle_team(ui, "info demo")
     joined = "\n".join(ui.lines)
     assert "alice" in joined

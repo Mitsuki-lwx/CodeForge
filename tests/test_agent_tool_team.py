@@ -85,7 +85,9 @@ async def test_inprocess_teammate_cannot_spawn(monkeypatch):
     monkeypatch.delenv("CODEFORGE_TEAM_HOOK", raising=False)
 
     tc = TeammateContext(
-        team_name="demo", member_name="alice", agent_id="agent-a",
+        team_name="demo",
+        member_name="alice",
+        agent_id="agent-a",
         backend_type="in-process",
     )
     tc.install()

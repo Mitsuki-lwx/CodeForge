@@ -81,9 +81,7 @@ def load_loop(name_or_path: str = "", agent: Any | None = None) -> AgentLoop:
             return mod.create_loop(agent)
         if hasattr(mod, "loop"):
             return mod.loop
-        raise ImportError(
-            f"loop 模块 {name_or_path} 缺少 create_loop() 或 loop 实例"
-        )
+        raise ImportError(f"loop 模块 {name_or_path} 缺少 create_loop() 或 loop 实例")
     except Exception as e:  # noqa: BLE001 —— 加载失败回退，绝不阻断
         logger.warning("加载自定义 loop %r 失败，回退 ReactLoop: %s", name_or_path, e)
         return ReactLoop()

@@ -11,8 +11,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, Optional
 
 from .writer import AUDIT_DIRNAME
 
@@ -104,4 +104,8 @@ def children_of(
     parent_span_id="" 时返回全部顶层事件(未显式关联的)。
     """
     p = parent_span_id
-    return [ev for ev in iter_session(session_id, audit_dir) if ev.get("parent_span_id", "") == p]
+    return [
+        ev
+        for ev in iter_session(session_id, audit_dir)
+        if ev.get("parent_span_id", "") == p
+    ]
